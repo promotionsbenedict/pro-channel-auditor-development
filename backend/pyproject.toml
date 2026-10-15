@@ -1,0 +1,30 @@
+[project]
+name = "pro-channel-auditor"
+version = "0.1.0"
+description = "Pro Channel Auditor - multi-tenant Telegram pending-request auditing platform"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.13,<4",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pydantic-settings>=2.6",
+    "redis>=5.2",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "cryptography>=43",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pgserver>=0.1.4",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["ignore::DeprecationWarning:pgserver.*"]
