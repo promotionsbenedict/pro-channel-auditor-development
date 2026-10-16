@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pca.config import Settings
+from pca.services.security_events import record_event_detached
 from pca.security.webapp import InitDataError, WebAppIdentity, verify_init_data
 from pca.services import connect as flow
 
@@ -112,7 +113,14 @@ async def _run(request: Request, step: Step, *, code_sending: bool = False) -> J
             settings.bot_token.get_secret_value(),
             max_age_seconds=settings.connect_init_data_max_age_seconds,
         )
-    except InitDataError:
+    except InitDataError as exc:
+        await record_event_detached(
+            state.sessionmaker,
+            "connect.init_data_rejected",
+            severity="warning",
+            source_ip=_client_ip(request),
+            detail={"reason": str(exc)[:80]},
+        )
         return _error("unauthorized", 401)
 
     async with state.sessionmaker() as session:

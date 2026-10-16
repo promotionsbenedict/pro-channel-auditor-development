@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from aiogram import F, Router
+import logging
+
+from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pca.bot import keyboards, texts
 from pca.bot.access import check_membership, show_gate
-from pca.bot.keyboards import MenuCb, PrivacyCb, SubCb
+from pca.bot.keyboards import MenuCb, PrivacyCb, SubCb, SupCb
+from pca.services import support
 from pca.bot.ui import respond
 from pca.config import Settings
 from pca.db.models import User
@@ -21,6 +27,7 @@ from pca.services.connection import disconnect
 from pca.services.users import request_deletion
 from pca.telegram.types import AccountGateway
 
+log = logging.getLogger(__name__)
 router = Router(name="public")
 router.message.filter(F.chat.type == "private")
 
@@ -84,9 +91,50 @@ async def show_help(event: Message | CallbackQuery, session: AsyncSession, setti
     await respond(event, texts.help_text(await get_support_contact(session, settings)), keyboards.help_menu())
 
 
+class SupportStates(StatesGroup):
+    writing = State()
+
+
 @router.message(Command("support"), flags=PUBLIC)
 async def show_support(message: Message, session: AsyncSession, settings: Settings) -> None:
-    await respond(message, texts.support_text(await get_support_contact(session, settings)), keyboards.back_to_menu())
+    await respond(message, texts.support_text(await get_support_contact(session, settings)), keyboards.support_menu())
+
+
+@router.callback_query(SupCb.filter(F.action == "write"), flags=PUBLIC)
+async def support_write(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(SupportStates.writing)
+    await respond(callback, texts.SUPPORT_PROMPT, keyboards.cancel_input())
+
+
+@router.callback_query(SupCb.filter(F.action == "cancel"), flags=PUBLIC)
+async def support_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await respond(callback, texts.SUPPORT_CANCELLED, keyboards.back_to_menu())
+
+
+@router.message(SupportStates.writing, F.text, ~F.text.startswith("/"), flags=PUBLIC)
+async def support_submit(
+    message: Message, state: FSMContext, session: AsyncSession, db_user: User, settings: Settings, bot: Bot
+) -> None:
+    try:
+        ticket = await support.create_ticket(session, db_user, message.text or "")
+    except support.SupportError as exc:
+        if exc.code == "too_long":
+            await message.answer(texts.SUPPORT_TOO_LONG, reply_markup=keyboards.cancel_input())
+            return
+        await state.clear()
+        await session.rollback()
+        await message.answer(texts.SUPPORT_TOO_MANY, reply_markup=keyboards.back_to_menu())
+        return
+    await session.commit()
+    await state.clear()
+    await message.answer(texts.support_received_text(ticket.id), reply_markup=keyboards.back_to_menu())
+    who = f"@{db_user.username}" if db_user.username else str(db_user.telegram_user_id)
+    for admin_id in settings.admin_telegram_ids:
+        try:
+            await bot.send_message(admin_id, texts.support_admin_alert(ticket.id, who, ticket.message))
+        except TelegramAPIError:
+            log.warning("could not alert admin about ticket", extra={"ticket_id": ticket.id})
 
 
 @router.message(Command("privacy"), flags=PUBLIC)

@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pca.domain.enums import PaymentStatus
 from pca.services import payments
 from pca.services.payments import PaymentError, SettlementOutcome
+from pca.services.security_events import record_event_detached
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +61,15 @@ async def paystack_webhook(request: Request) -> JSONResponse:
             return JSONResponse({"ok": False}, status_code=502)
     if not result.accepted:
         log.warning("paystack webhook rejected: bad signature")
+        forwarded = request.headers.get("x-forwarded-for", "")
+        source_ip = forwarded.split(",")[0].strip() or (request.client.host if request.client else None)
+        await record_event_detached(
+            request.app.state.sessionmaker,
+            "payment.webhook_bad_signature",
+            severity="critical",
+            source_ip=source_ip,
+            detail={"bytes": len(body)},
+        )
         return JSONResponse({"ok": False}, status_code=401)
     await notify_outcome(request, result.outcome)
     return JSONResponse({"ok": True})

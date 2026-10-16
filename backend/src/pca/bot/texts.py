@@ -79,6 +79,32 @@ def support_text(support_contact: str) -> str:
     )
 
 
+SUPPORT_PROMPT = (
+    "<b>✉️ Message support</b>\n\n"
+    "Send your message as a single text (up to 2000 characters). Include a payment reference or audit number if it's about one.\n\n"
+    "Never include login codes, 2FA passwords or session data."
+)
+SUPPORT_CANCELLED = "Support message cancelled."
+SUPPORT_TOO_LONG = "That message is over 2000 characters. Please shorten it and send it again."
+SUPPORT_TOO_MANY = "You already have 3 open tickets. We'll reply to those first; you'll get a message here when we do."
+
+
+def support_received_text(ticket_id: int) -> str:
+    return f"✅ Ticket <b>#{ticket_id}</b> received. We'll reply here in this chat."
+
+
+def support_admin_alert(ticket_id: int, who: str, message: str) -> str:
+    preview = message if len(message) <= 800 else message[:800] + "…"
+    return (
+        f"<b>New support ticket #{ticket_id}</b> from {esc(who)}\n\n{esc(preview)}\n\n"
+        f"Reply: <code>/reply {ticket_id} your message</code>"
+    )
+
+
+def support_reply_text(ticket_id: int, reply: str) -> str:
+    return f"<b>🛟 Support reply · ticket #{ticket_id}</b>\n\n{esc(reply)}"
+
+
 PRIVACY = (
     "<b>🔐 Privacy</b>\n\n"
     "• We store your Telegram user id, username, credit ledger, payments and audit summaries.\n"
@@ -441,15 +467,29 @@ def admin_stats_text(stats: PlatformStats) -> str:
     return (
         "<b>🛠 Admin Overview</b>\n\n"
         f"Customers: <b>{stats.total_customers}</b> (active 30d: {stats.active_30d}, suspended: {stats.suspended})\n"
-        f"Audits: completed {stats.audits_completed} · failed {stats.audits_failed} · active {stats.audits_active}\n"
+        f"Connected accounts: {stats.connected_accounts}\n"
+        f"Audits: completed {stats.audits_completed} · partial {stats.audits_partial} · "
+        f"failed {stats.audits_failed} · cancelled {stats.audits_cancelled} · active {stats.audits_active}\n"
         f"Verified revenue: {revenue}\n"
-        f"Credit liabilities: {stats.credits_available} available + {stats.credits_reserved} reserved\n\n"
-        "<b>Commands</b>\n"
-        "/admin_pricing — list tiers\n"
-        "/tier_set &lt;min&gt; &lt;max&gt; &lt;credits&gt;\n"
-        "/tier_off &lt;tier_id&gt;\n"
+        f"Payments: {stats.payments_success} paid · {stats.payments_pending} pending · {stats.payments_failed} failed/abandoned\n"
+        f"Credits: {stats.credits_sold} sold · {stats.credits_promotional} granted/promo · {stats.credits_consumed} consumed\n"
+        f"Credit liabilities: {stats.credits_available} available + {stats.credits_reserved} reserved\n"
+        f"Open support tickets: {stats.open_tickets} · Security events (24h): {stats.security_events_24h}\n\n"
+        "<b>Monitoring</b>\n"
+        "/health · /jobs · /failures · /security · /admin_log\n\n"
+        "<b>Customers</b>\n"
+        "/user &lt;telegram_id&gt;\n"
         "/suspend &lt;telegram_id&gt; · /unsuspend &lt;telegram_id&gt;\n"
         "/grant &lt;telegram_id&gt; &lt;credits&gt; &lt;reason&gt;\n"
-        "/sub_channel &lt;chat_id&gt; · /sub_enforce on|off · /sub_status\n"
-        "/admin_log — recent admin actions"
+        "/promo &lt;telegram_id&gt; &lt;credits&gt; &lt;reason&gt;\n"
+        "/debit &lt;telegram_id&gt; &lt;credits&gt; &lt;reason&gt;\n\n"
+        "<b>Audits</b>\n"
+        "/job_cancel &lt;audit_id&gt; · /job_retry &lt;audit_id&gt;\n\n"
+        "<b>Pricing and packages</b>\n"
+        "/admin_pricing · /tier_set &lt;min&gt; &lt;max&gt; &lt;credits&gt; · /tier_off &lt;tier_id&gt;\n"
+        "/packages · /package_set &lt;id|new&gt; &lt;credits&gt; &lt;price_naira&gt; &lt;name&gt; · /package_off &lt;id&gt;\n\n"
+        "<b>Support</b>\n"
+        "/tickets · /reply &lt;ticket_id&gt; &lt;message&gt; · /close_ticket &lt;ticket_id&gt;\n\n"
+        "<b>Subscription</b>\n"
+        "/sub_channel &lt;chat_id&gt; · /sub_enforce on|off · /sub_status"
     )

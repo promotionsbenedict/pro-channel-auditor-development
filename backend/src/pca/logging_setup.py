@@ -20,11 +20,19 @@ def redact(value: str) -> str:
     return value
 
 
+_SENSITIVE_KEY = re.compile(
+    r"(?i)(api_hash|password|passwd|session|secret|token|otp|phone_code|login_code|srp|authorization|signature|init_data)"
+)
+
+
 def redact_any(value: Any) -> Any:
     if isinstance(value, str):
         return redact(value)
     if isinstance(value, dict):
-        return {key: redact_any(item) for key, item in value.items()}
+        return {
+            key: "[REDACTED]" if isinstance(key, str) and _SENSITIVE_KEY.search(key) else redact_any(item)
+            for key, item in value.items()
+        }
     if isinstance(value, list | tuple):
         return [redact_any(item) for item in value]
     return value
