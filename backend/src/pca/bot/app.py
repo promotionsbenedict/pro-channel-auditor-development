@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from pca.bot.handlers import admin, customer, public
 from pca.bot.middlewares import AccessGateMiddleware, DatabaseMiddleware, ErrorShieldMiddleware
 from pca.config import Settings
+from pca.security.crypto import Keyring
+from pca.telegram.types import AccountGateway
 from pca.services.subscription import SubscriptionService
 
 
@@ -15,10 +17,14 @@ def build_dispatcher(
     sessionmaker: async_sessionmaker[AsyncSession],
     subscription: SubscriptionService,
     storage=None,
+    keyring: Keyring | None = None,
+    gateway: AccountGateway | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=storage) if storage is not None else Dispatcher()
     dp["settings"] = settings
     dp["subscription"] = subscription
+    dp["keyring"] = keyring
+    dp["gateway"] = gateway
 
     dp.update.outer_middleware(ErrorShieldMiddleware())
     dp.update.outer_middleware(DatabaseMiddleware(sessionmaker, settings))

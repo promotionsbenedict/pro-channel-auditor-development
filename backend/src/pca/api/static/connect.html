@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>Connect Telegram account · Pro Channel Auditor</title>
+  <link rel="stylesheet" href="/connect/static/connect.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script type="module" src="/connect/static/connect.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="brand">
+      <p class="eyebrow">Pro Channel Auditor</p>
+      <h1 id="title">Connect your Telegram account</h1>
+    </header>
+
+    <p id="alert" class="alert" role="alert" hidden></p>
+
+    <section id="screen-loading" class="screen" aria-live="polite">
+      <p class="muted">Checking your secure link…</p>
+    </section>
+
+    <section id="screen-intro" class="screen" hidden>
+      <p>We use your own account to read pending join requests on channels you administer. Audits are read-only.</p>
+      <ul class="facts">
+        <li><strong>What we can do:</strong> list channels you manage and read their pending join requests.</li>
+        <li><strong>What we never do:</strong> post, message anyone, approve or decline requests, or change settings.</li>
+        <li><strong>Your session</strong> is encrypted at rest. Revoke it anytime with /disconnect or in Telegram under Settings → Devices.</li>
+        <li><strong>Your 2FA password</strong>, if you have one, is processed on this device and never sent to us.</li>
+      </ul>
+      <label class="check">
+        <input id="consent" type="checkbox">
+        <span>I understand and want to connect my account.</span>
+      </label>
+      <button id="intro-next" class="btn" type="button" disabled>Continue</button>
+    </section>
+
+    <section id="screen-phone" class="screen" hidden>
+      <form id="phone-form" novalidate>
+        <label for="phone" class="label">Phone number</label>
+        <input id="phone" class="input" type="tel" inputmode="tel" autocomplete="tel" placeholder="+234 801 234 5678" required>
+        <p class="hint">Use the number of the Telegram account you are using right now, including the country code.</p>
+        <button class="btn" type="submit">Send code</button>
+      </form>
+    </section>
+
+    <section id="screen-code" class="screen" hidden>
+      <form id="code-form" novalidate>
+        <p id="code-where" class="muted"></p>
+        <label for="code" class="label">Login code</label>
+        <input id="code" class="input code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required>
+        <button class="btn" type="submit">Verify</button>
+      </form>
+      <button id="resend" class="link" type="button" disabled>Resend code</button>
+      <p class="hint">Never share this code with anyone else. We only ask for it here, on our own secure page.</p>
+    </section>
+
+    <section id="screen-password" class="screen" hidden>
+      <form id="password-form" novalidate>
+        <p class="muted">Your account has two-step verification. Enter your cloud password.</p>
+        <label for="password" class="label">Cloud password</label>
+        <input id="password" class="input" type="password" autocomplete="current-password" required>
+        <p id="password-hint" class="hint" hidden></p>
+        <button class="btn" type="submit">Unlock</button>
+      </form>
+      <p class="hint">The password is used on this device to compute a one-time proof. It is not sent to our servers.</p>
+    </section>
+
+    <section id="screen-done" class="screen" hidden>
+      <p class="success">Connected <span id="done-name"></span></p>
+      <p class="muted">Return to the bot and open My Channels to load the channels you manage.</p>
+      <button id="close" class="btn" type="button">Back to the bot</button>
+    </section>
+
+    <section id="screen-ended" class="screen" hidden>
+      <p id="ended-text" class="muted"></p>
+      <button id="ended-close" class="btn secondary" type="button">Back to the bot</button>
+    </section>
+
+    <footer class="foot">
+      <button id="cancel" class="link" type="button" hidden>Cancel connection</button>
+    </footer>
+  </main>
+</body>
+</html>

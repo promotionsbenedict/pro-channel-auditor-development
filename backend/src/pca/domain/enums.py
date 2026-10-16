@@ -25,6 +25,23 @@ class ChannelAuthorizationStatus(StrEnum):
     REVOKED = "revoked"
 
 
+class ConnectFlowStatus(StrEnum):
+    ISSUED = "issued"
+    CODE_SENT = "code_sent"
+    PASSWORD_REQUIRED = "password_required"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+
+
+OPEN_CONNECT_FLOW_STATUSES = (
+    ConnectFlowStatus.ISSUED.value,
+    ConnectFlowStatus.CODE_SENT.value,
+    ConnectFlowStatus.PASSWORD_REQUIRED.value,
+)
+
+
 class AuditJobStatus(StrEnum):
     PENDING = "pending"
     QUEUED = "queued"

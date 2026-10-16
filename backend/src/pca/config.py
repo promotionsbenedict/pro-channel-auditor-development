@@ -37,6 +37,36 @@ class Settings(BaseSettings):
     public_base_url: str = ""
     heartbeat_path: str = "/tmp/pca-bot-heartbeat"
 
+    # MTProto application credentials from https://my.telegram.org (Telegram API ToS 2.1: own api_id).
+    telegram_api_id: int | None = None
+    telegram_api_hash: SecretStr = SecretStr("")
+    telegram_device_model: str = "Pro Channel Auditor"
+    telegram_system_version: str = "Server"
+    telegram_app_version: str = "pca-0.2"
+
+    # Session encryption keyring: "keyid:base64(32 bytes)[,keyid:...]". The active id encrypts; all ids decrypt.
+    session_keys_raw: SecretStr = Field(default=SecretStr(""), validation_alias="PCA_SESSION_KEYS")
+    session_active_key_id: str = ""
+
+    connect_link_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    connect_session_ttl_seconds: int = Field(default=900, ge=120, le=3600)
+    # Only allow connecting the same Telegram account that is talking to the bot.
+    connect_require_same_account: bool = True
+    connect_max_codes_per_hour: int = Field(default=4, ge=1, le=20)
+    connect_max_attempts_per_step: int = Field(default=5, ge=1, le=20)
+    connect_max_starts_per_ip_hour: int = Field(default=30, ge=1, le=1000)
+    connect_init_data_max_age_seconds: int = Field(default=3600, ge=60, le=86400)
+
+    @property
+    def connect_enabled(self) -> bool:
+        return bool(
+            self.public_base_url
+            and self.telegram_api_id
+            and self.telegram_api_hash.get_secret_value()
+            and self.session_keys_raw.get_secret_value()
+            and self.session_active_key_id
+        )
+
     @property
     def admin_telegram_ids(self) -> frozenset[int]:
         ids: set[int] = set()
@@ -51,6 +81,10 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _validate_production(self) -> Settings:
         _ = self.admin_telegram_ids
+        if self.session_keys_raw.get_secret_value():
+            from pca.security.crypto import Keyring
+
+            Keyring.parse(self.session_keys_raw.get_secret_value(), self.session_active_key_id)
         if self.environment == "production":
             problems = []
             if not self.bot_token.get_secret_value():
@@ -61,9 +95,14 @@ class Settings(BaseSettings):
                 )
             if not self.admin_telegram_ids:
                 problems.append("PCA_ADMIN_TELEGRAM_IDS must list at least one numeric admin id")
-            # Optional until the account-connection web flow ships; when set it must be HTTPS.
-            if self.public_base_url and not self.public_base_url.startswith("https://"):
-                problems.append("PCA_PUBLIC_BASE_URL must use https:// in production")
+            # Account connection is optional; when the public URL is set the rest must be complete.
+            if self.public_base_url:
+                if not self.public_base_url.startswith("https://"):
+                    problems.append("PCA_PUBLIC_BASE_URL must use https:// in production")
+                if not self.telegram_api_id or not self.telegram_api_hash.get_secret_value():
+                    problems.append("PCA_TELEGRAM_API_ID and PCA_TELEGRAM_API_HASH are required for account connection")
+                if not self.session_keys_raw.get_secret_value() or not self.session_active_key_id:
+                    problems.append("PCA_SESSION_KEYS and PCA_SESSION_ACTIVE_KEY_ID are required for account connection")
             if problems:
                 raise ValueError("; ".join(problems))
         return self

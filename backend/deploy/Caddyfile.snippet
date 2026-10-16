@@ -1,0 +1,12 @@
+# Add this block to the EXISTING Caddyfile used by prochannelhelpbot-caddy-1, replacing the
+# domain with the one you point at this VPS. Then reload that Caddy (no restart needed):
+#   docker exec prochannelhelpbot-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+#
+# The API listens on the host's localhost:18080. The Caddy container reaches the host via
+# host.docker.internal, which needs `extra_hosts: ["host.docker.internal:host-gateway"]`
+# on the Caddy service if it is not already set.
+
+connect.example.com {
+	encode gzip
+	reverse_proxy host.docker.internal:18080
+}

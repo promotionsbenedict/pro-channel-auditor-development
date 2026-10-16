@@ -26,6 +26,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pca.domain.enums import (
     AuditJobStatus,
     ChannelAuthorizationStatus,
+    ConnectFlowStatus,
     ConnectionStatus,
     PaymentStatus,
     TransactionType,
@@ -103,8 +104,36 @@ class TelegramConnection(Base):
         String(16), server_default=ConnectionStatus.PENDING.value, nullable=False
     )
     connected_account_id: Mapped[int | None] = mapped_column(BigInteger)
+    account_username: Mapped[str | None] = mapped_column(String(64))
+    account_display_name: Mapped[str | None] = mapped_column(String(255))
+    account_phone_masked: Mapped[str | None] = mapped_column(String(32))
     connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revocation_reason: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class ConnectFlow(Base):
+    """One in-progress HTTPS login. The link token is stored only as a SHA-256 hash."""
+
+    __tablename__ = "connect_flows"
+    __table_args__ = (_one_of("status", ConnectFlowStatus),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    flow_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    link_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), server_default=ConnectFlowStatus.ISSUED.value, nullable=False)
+    phone_masked: Mapped[str | None] = mapped_column(String(32))
+    encrypted_state: Mapped[bytes | None] = mapped_column(LargeBinary)
+    encryption_key_id: Mapped[str | None] = mapped_column(String(32))
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    codes_sent: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    failure_reason: Mapped[str | None] = mapped_column(String(32))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -171,6 +200,7 @@ class Channel(Base):
     telegram_channel_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     username: Mapped[str | None] = mapped_column(String(64))
+    channel_kind: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -191,8 +221,16 @@ class ChannelAuthorization(Base):
         ForeignKey("telegram_connections.id", ondelete="CASCADE"), nullable=False
     )
     authorization_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    # Peer access hashes are scoped to the connected account, so they live here rather than on Channel.
+    access_hash: Mapped[int | None] = mapped_column(BigInteger)
+    is_creator: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
+    can_manage_join_requests: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
+    admin_rights: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    pending_requests: Mapped[int | None] = mapped_column(Integer)
+    selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
 
 
 class AuditJob(Base):

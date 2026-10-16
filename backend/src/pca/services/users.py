@@ -78,8 +78,13 @@ async def get_active_connection(session: AsyncSession, user_id: int) -> Telegram
     ).scalar_one_or_none()
 
 
-async def revoke_connections(session: AsyncSession, user_id: int) -> int:
-    """Revoke every stored MTProto session for this user and wipe the ciphertext."""
+async def revoke_connections(session: AsyncSession, user_id: int, reason: str = "user_deleted") -> int:
+    """Revoke every stored MTProto session for this user locally and wipe the ciphertext.
+
+    Prefer services.connection.disconnect, which also logs the session out on Telegram.
+    """
+    from pca.services.connection import revoke_channel_authorizations
+
     result = await session.execute(
         update(TelegramConnection)
         .where(
@@ -91,10 +96,15 @@ async def revoke_connections(session: AsyncSession, user_id: int) -> int:
         .values(
             connection_status=ConnectionStatus.REVOKED.value,
             encrypted_session=None,
+            encryption_key_id=None,
             revoked_at=func.now(),
+            revocation_reason=reason,
         )
+        .returning(TelegramConnection.id)
     )
-    return result.rowcount or 0
+    ids = list(result.scalars())
+    await revoke_channel_authorizations(session, ids)
+    return len(ids)
 
 
 async def request_deletion(session: AsyncSession, user: User) -> None:

@@ -16,7 +16,10 @@ from pca.db.models import User
 from pca.domain.enums import UserStatus
 from pca.services.subscription import SubscriptionService
 from pca.services.system_settings import get_support_contact
-from pca.services.users import request_deletion, revoke_connections
+from pca.security.crypto import Keyring
+from pca.services.connection import disconnect
+from pca.services.users import request_deletion
+from pca.telegram.types import AccountGateway
 
 router = Router(name="public")
 router.message.filter(F.chat.type == "private")
@@ -98,14 +101,27 @@ async def ask_deletion(query: CallbackQuery) -> None:
 
 
 @router.callback_query(PrivacyCb.filter(F.action == "delete_confirm"), flags=PUBLIC)
-async def confirm_deletion(query: CallbackQuery, session: AsyncSession, db_user: User) -> None:
+async def confirm_deletion(
+    query: CallbackQuery,
+    session: AsyncSession,
+    db_user: User,
+    keyring: Keyring | None,
+    gateway: AccountGateway | None,
+) -> None:
+    await disconnect(session, keyring, gateway, db_user.id, reason="user_deleted")
     await request_deletion(session, db_user)
     await session.commit()
     await respond(query, texts.DELETE_DONE)
 
 
 @router.message(Command("disconnect"), flags=PUBLIC)
-async def cmd_disconnect(message: Message, session: AsyncSession, db_user: User) -> None:
-    revoked = await revoke_connections(session, db_user.id)
+async def cmd_disconnect(
+    message: Message,
+    session: AsyncSession,
+    db_user: User,
+    keyring: Keyring | None,
+    gateway: AccountGateway | None,
+) -> None:
+    revoked, remote_ok = await disconnect(session, keyring, gateway, db_user.id)
     await session.commit()
-    await respond(message, texts.disconnect_result(revoked), keyboards.back_to_menu())
+    await respond(message, texts.disconnect_result(revoked, remote_ok), keyboards.back_to_menu())

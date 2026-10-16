@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 import pytest
 from sqlalchemy import func, select
 
@@ -96,15 +98,30 @@ async def test_pricing_quotes_by_tier(sessionmaker):
 def test_production_settings_validation():
     with pytest.raises(ValueError, match="PCA_BOT_TOKEN"):
         Settings(environment="production", _env_file=None)
+    key = base64.b64encode(b"k" * 32).decode()
     ok = Settings(
         environment="production",
         bot_token="123:abc",
         required_channel_id=-100,
         PCA_ADMIN_TELEGRAM_IDS="1, 2",
         public_base_url="https://example.com",
+        telegram_api_id=12345,
+        telegram_api_hash="hash",
+        PCA_SESSION_KEYS=f"k1:{key}",
+        session_active_key_id="k1",
         _env_file=None,
     )
     assert ok.admin_telegram_ids == frozenset({1, 2})
+    assert ok.connect_enabled
+
+    with pytest.raises(ValueError, match="PCA_TELEGRAM_API_ID"):
+        Settings(
+            environment="production",
+            bot_token="123:abc",
+            PCA_ADMIN_TELEGRAM_IDS="1",
+            public_base_url="https://example.com",
+            _env_file=None,
+        )
 
     by_username = Settings(
         environment="production", bot_token="123:abc", PCA_ADMIN_TELEGRAM_IDS="1", _env_file=None

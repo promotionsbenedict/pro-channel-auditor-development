@@ -16,6 +16,7 @@ from redis.asyncio import Redis
 
 from pca.bot.app import build_dispatcher
 from pca.config import Settings, get_settings
+from pca.services.connection import keyring_from_settings
 from pca.db.session import create_engine, create_sessionmaker
 from pca.logging_setup import configure_logging
 from pca.services.subscription import RedisCache, SubscriptionService
@@ -92,8 +93,21 @@ async def main() -> None:
     bot = Bot(settings.bot_token.get_secret_value(), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     settings = await resolve_required_channel(bot, settings)
     subscription = SubscriptionService(bot, RedisCache(redis), cache_ttl_seconds=settings.subscription_cache_seconds)
+    keyring = keyring_from_settings(settings) if settings.session_keys_raw.get_secret_value() else None
+    gateway = None
+    if settings.telegram_api_id and settings.telegram_api_hash.get_secret_value():
+        from pca.telegram.gateway import TelethonGateway
+
+        gateway = TelethonGateway(settings)
+    if not settings.connect_enabled:
+        logger.warning("account connection disabled: set PCA_PUBLIC_BASE_URL, Telegram API and session keys")
     dp = build_dispatcher(
-        settings=settings, sessionmaker=sessionmaker, subscription=subscription, storage=RedisStorage(redis)
+        settings=settings,
+        sessionmaker=sessionmaker,
+        subscription=subscription,
+        storage=RedisStorage(redis),
+        keyring=keyring,
+        gateway=gateway,
     )
 
     heartbeat_task = asyncio.create_task(heartbeat(Path(settings.heartbeat_path)))

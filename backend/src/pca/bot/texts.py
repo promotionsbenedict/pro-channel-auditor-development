@@ -98,10 +98,15 @@ DELETE_CONFIRM = (
 DELETE_DONE = "✅ Deletion requested. Your Telegram session has been revoked."
 
 
-def disconnect_result(revoked: int) -> str:
-    if revoked:
-        return "✅ Your connected Telegram account has been disconnected and its session wiped."
-    return "No Telegram account is connected."
+def disconnect_result(revoked: int, remote_ok: bool = True) -> str:
+    if not revoked:
+        return "No Telegram account is connected."
+    if remote_ok:
+        return "✅ Disconnected. The session was logged out of Telegram and wiped from our servers."
+    return (
+        "✅ Disconnected and wiped from our servers. We couldn't reach Telegram to log the session out, "
+        "so also remove it in Telegram under Settings → Devices."
+    )
 
 
 def wallet_text(available: int, reserved: int, transactions: list[CreditTransaction]) -> str:
@@ -131,18 +136,105 @@ def audits_text(items: list[AuditListItem]) -> str:
     return "\n".join(lines)
 
 
-def connected_account_text(connected_account_id: int | None, connected_at) -> str:
-    if connected_account_id is None:
+def connected_account_text(connection) -> str:
+    if connection is None:
         return (
             "<b>👤 Connected Account</b>\n\n"
             "No Telegram account is connected. Use 🔗 Connect Telegram Account to link one."
         )
-    since = f"{connected_at:%Y-%m-%d %H:%M} UTC" if connected_at else "unknown"
+    since = f"{connection.connected_at:%Y-%m-%d %H:%M} UTC" if connection.connected_at else "unknown"
+    lines = ["<b>👤 Connected Account</b>\n"]
+    if connection.account_display_name:
+        lines.append(f"Name: {esc(connection.account_display_name)}")
+    if connection.account_username:
+        lines.append(f"Username: @{esc(connection.account_username)}")
+    if connection.account_phone_masked:
+        lines.append(f"Phone: <code>{esc(connection.account_phone_masked)}</code>")
+    lines.append(f"Account id: <code>{connection.connected_account_id}</code>")
+    lines.append(f"Connected since: {since}")
+    lines.append("\nAccess is read-only. Use /disconnect to log this session out of Telegram and wipe it.")
+    return "\n".join(lines)
+
+
+def connect_intro(minutes: int, *, reconnecting: bool) -> str:
+    extra = "\n\nConnecting again replaces your current session." if reconnecting else ""
     return (
-        "<b>👤 Connected Account</b>\n\n"
-        f"Account id: <code>{connected_account_id}</code>\n"
-        f"Connected since: {since}\n\n"
-        "Use /disconnect to revoke access at any time."
+        "<b>🔗 Connect Telegram Account</b>\n\n"
+        "Tap the button below to open our secure connection page inside Telegram. "
+        "You'll confirm your phone number and enter the login code there, never in this chat.\n\n"
+        f"The link is personal and expires in {minutes} minutes.{extra}"
+    )
+
+
+SESSION_EXPIRED = (
+    "<b>⚠️ Session ended</b>\n\n"
+    "Your connected session is no longer valid (it was logged out or revoked in Telegram). "
+    "We've wiped it. Connect again to continue."
+)
+
+TELEGRAM_UNAVAILABLE = "Telegram didn't respond just now. Please try again in a moment."
+
+
+def telegram_busy(retry_after: int | None) -> str:
+    wait = f" Try again in about {max(1, (retry_after or 60) // 60)} min." if retry_after else ""
+    return f"Telegram asked us to slow down.{wait}"
+
+
+def channels_text(total: int, eligible: int) -> str:
+    if total == 0:
+        return (
+            "<b>📢 My Channels</b>\n\n"
+            "Your connected account doesn't administer any channels.\n"
+            "Make it an admin of a channel, then tap Refresh."
+        )
+    return (
+        "<b>📢 My Channels</b>\n\n"
+        f"Found {total} channel(s) you administer. {eligible} can be audited.\n"
+        "✅ can manage join requests · 🚫 missing that permission\n\n"
+        "Tap a channel to re-check its permissions."
+    )
+
+
+CHANNEL_GONE = (
+    "That channel is no longer available to your connected account. "
+    "Open My Channels to refresh the list."
+)
+
+
+def channel_detail_text(channel, auth) -> str:
+    username = f" (@{esc(channel.username)})" if channel.username else ""
+    role = "Owner" if auth.is_creator else "Administrator"
+    pending = auth.pending_requests if auth.pending_requests is not None else "unknown"
+    if auth.can_manage_join_requests:
+        status = "✅ Can manage join requests. This channel can be audited."
+    else:
+        status = (
+            "🚫 Your account can't manage join requests here. Ask the owner to grant "
+            "the “Add Subscribers / Invite Users” admin right, then re-check."
+        )
+    return (
+        f"<b>{esc(channel.title)}</b>{username}\n\n"
+        f"Role: {role}\n"
+        f"Pending join requests: {pending}\n\n"
+        f"{status}"
+    )
+
+
+AUDIT_PICK = "<b>🔍 New Audit</b>\n\nChoose the channel to audit:"
+
+AUDIT_NO_ELIGIBLE = (
+    "<b>🔍 New Audit</b>\n\n"
+    "None of your channels can be audited yet. Your account needs the right to manage join "
+    "requests. Open My Channels to refresh and check permissions."
+)
+
+
+def audit_ready_text(channel, auth) -> str:
+    pending = auth.pending_requests if auth.pending_requests is not None else "unknown"
+    return (
+        f"<b>🔍 {esc(channel.title)}</b>\n\n"
+        f"Permissions verified. Pending join requests: {pending}.\n\n"
+        "The audit engine is launching soon. No credits have been charged."
     )
 
 

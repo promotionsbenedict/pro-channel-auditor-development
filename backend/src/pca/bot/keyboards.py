@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
@@ -41,6 +41,62 @@ def main_menu() -> InlineKeyboardMarkup:
 def back_to_menu() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="⬅️ Main menu", callback_data=MenuCb(action="home"))
+    return builder.as_markup()
+
+
+class ChanCb(CallbackData, prefix="ch"):
+    action: str
+    id: int
+
+
+def connect_webapp(url: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔐 Open secure connection page", web_app=WebAppInfo(url=url))
+    builder.button(text="⬅️ Main menu", callback_data=MenuCb(action="home"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def account_menu(connected: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if connected:
+        builder.button(text="📢 My Channels", callback_data=MenuCb(action="channels"))
+        builder.button(text="🔄 Reconnect", callback_data=MenuCb(action="connect"))
+    else:
+        builder.button(text="🔗 Connect Telegram Account", callback_data=MenuCb(action="connect"))
+    builder.button(text="⬅️ Main menu", callback_data=MenuCb(action="home"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def channel_list(items: list[tuple[int, str, bool]], action: str) -> InlineKeyboardMarkup:
+    """items: (authorization id, title, can audit)."""
+    builder = InlineKeyboardBuilder()
+    for auth_id, title, can_audit in items[:50]:
+        mark = "✅" if can_audit else "🚫"
+        builder.button(text=f"{mark} {title[:48]}", callback_data=ChanCb(action=action, id=auth_id))
+    if action == "view":
+        builder.button(text="🔄 Refresh", callback_data=MenuCb(action="channels"))
+    builder.button(text="⬅️ Main menu", callback_data=MenuCb(action="home"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def channel_detail(auth_id: int, can_audit: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if can_audit:
+        builder.button(text="🔍 Audit this channel", callback_data=ChanCb(action="audit", id=auth_id))
+    builder.button(text="🔄 Re-check permissions", callback_data=ChanCb(action="view", id=auth_id))
+    builder.button(text="⬅️ My Channels", callback_data=MenuCb(action="channels"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def reconnect() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔗 Connect again", callback_data=MenuCb(action="connect"))
+    builder.button(text="⬅️ Main menu", callback_data=MenuCb(action="home"))
+    builder.adjust(1)
     return builder.as_markup()
 
 
