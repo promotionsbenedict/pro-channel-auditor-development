@@ -48,8 +48,29 @@ class AuditJobStatus(StrEnum):
     RUNNING = "running"
     WAITING_FOR_TELEGRAM = "waiting_for_telegram"
     COMPLETED = "completed"
+    PARTIAL = "partial"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+TERMINAL_AUDIT_STATUSES: tuple[str, ...] = ("completed", "partial", "failed", "cancelled")
+REPORTABLE_AUDIT_STATUSES: tuple[str, ...] = ("completed", "partial")
+
+
+class LastSeenCategory(StrEnum):
+    ONLINE = "online"
+    OFFLINE_24H = "offline_24h"
+    RECENTLY = "recently"
+    LAST_WEEK = "last_week"
+    LAST_MONTH = "last_month"
+    OLDER = "older"
+    HIDDEN = "hidden"
+
+
+class SupportTicketStatus(StrEnum):
+    OPEN = "open"
+    ANSWERED = "answered"
+    CLOSED = "closed"
 
 
 ACTIVE_AUDIT_STATUSES: tuple[AuditJobStatus, ...] = (
@@ -65,6 +86,7 @@ class TransactionType(StrEnum):
     ADMIN_GRANT = "admin_grant"
     ADMIN_DEBIT = "admin_debit"
     REFUND = "refund"
+    PROMO = "promo"
     AUDIT_RESERVE = "audit_reserve"
     AUDIT_SETTLE = "audit_settle"
     AUDIT_RELEASE = "audit_release"

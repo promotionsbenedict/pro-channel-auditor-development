@@ -20,7 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pca.db.models import CreditTransaction, CreditWallet
 from pca.domain.enums import TransactionType
 
-_CREDIT_TYPES = {TransactionType.PURCHASE, TransactionType.ADMIN_GRANT, TransactionType.REFUND}
+_CREDIT_TYPES = {
+    TransactionType.PURCHASE,
+    TransactionType.ADMIN_GRANT,
+    TransactionType.REFUND,
+    TransactionType.PROMO,
+}
 
 
 class LedgerError(Exception):

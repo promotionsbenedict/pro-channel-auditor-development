@@ -29,6 +29,7 @@ from pca.domain.enums import (
     ConnectFlowStatus,
     ConnectionStatus,
     PaymentStatus,
+    SupportTicketStatus,
     TransactionType,
     UserRole,
     UserStatus,
@@ -75,6 +76,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(16), server_default=UserRole.CUSTOMER.value, nullable=False)
     status: Mapped[str] = mapped_column(String(24), server_default=UserStatus.ACTIVE.value, nullable=False)
     deletion_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    billing_email: Mapped[str | None] = mapped_column(String(254))
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
@@ -176,6 +178,7 @@ class Payment(Base):
         _one_of("status", PaymentStatus),
         CheckConstraint("amount > 0", name="amount_positive"),
         CheckConstraint("credits > 0", name="credits_positive"),
+        Index("ix_payments_status_created", "status", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -187,8 +190,13 @@ class Payment(Base):
     credits: Mapped[int] = mapped_column(Integer, nullable=False)
     package_id: Mapped[int | None] = mapped_column(ForeignKey("credit_packages.id", ondelete="SET NULL"))
     status: Mapped[str] = mapped_column(String(16), server_default=PaymentStatus.INITIALIZED.value, nullable=False)
-    provider_transaction_id: Mapped[str | None] = mapped_column(String(64))
+    provider_transaction_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    mode: Mapped[str] = mapped_column(String(8), server_default="test", nullable=False)
+    authorization_url: Mapped[str | None] = mapped_column(String(512))
+    provider_status: Mapped[str | None] = mapped_column(String(32))
+    failure_reason: Mapped[str | None] = mapped_column(String(64))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -212,6 +220,7 @@ class ChannelAuthorization(Base):
         UniqueConstraint(
             "user_id", "channel_id", "telegram_connection_id", name="uq_channel_authorizations_owner"
         ),
+        Index("ix_channel_authorizations_connection", "telegram_connection_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -264,9 +273,83 @@ class AuditJob(Base):
     error_code: Mapped[str | None] = mapped_column(String(64))
     progress_chat_id: Mapped[int | None] = mapped_column(BigInteger)
     progress_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    channel_authorization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("channel_authorizations.id", ondelete="SET NULL")
+    )
+    scan_limit: Mapped[int | None] = mapped_column(Integer)
+    scanned_count: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    flood_waits: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    locked_by: Mapped[str | None] = mapped_column(String(64))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class AuditRequester(Base):
+    """Minimised per-requester attributes, enough for aggregates and the CSV export.
+
+    No names, usernames, phone numbers or bios are stored. ``requester_ref`` is a
+    keyed hash used only to de-duplicate across pages while a scan runs; it is
+    cleared when the audit finalises. Rows are purged after the retention window.
+    """
+
+    __tablename__ = "audit_requesters"
+    __table_args__ = (
+        Index(
+            "uq_audit_requesters_ref",
+            "audit_job_id",
+            "requester_ref",
+            unique=True,
+            postgresql_where=text("requester_ref IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    audit_job_id: Mapped[int] = mapped_column(
+        ForeignKey("audit_jobs.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    requester_ref: Mapped[str | None] = mapped_column(String(64))
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen: Mapped[str] = mapped_column(String(16), nullable=False)
+    has_photo: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    has_username: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    is_premium: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    is_bot: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    is_scam: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    is_fake: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    via_chatlist: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
+
+
+class SecurityEvent(Base):
+    __tablename__ = "security_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    severity: Mapped[str] = mapped_column(String(8), server_default="info", nullable=False)
+    source_ip: Mapped[str | None] = mapped_column(String(64))
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+    __table_args__ = (_one_of("status", SupportTicketStatus),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), server_default=SupportTicketStatus.OPEN.value, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    reply: Mapped[str | None] = mapped_column(Text)
+    replied_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 

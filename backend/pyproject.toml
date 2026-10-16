@@ -1,10 +1,15 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "pro-channel-auditor"
-version = "0.1.0"
+version = "1.0.0"
 description = "Pro Channel Auditor - multi-tenant Telegram pending-request auditing platform"
 requires-python = ">=3.12"
 dependencies = [
     "aiogram>=3.13,<4",
+    "telethon>=1.36,<2",
     "sqlalchemy[asyncio]>=2.0.36",
     "asyncpg>=0.30",
     "alembic>=1.14",
@@ -13,6 +18,8 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "cryptography>=43",
+    "httpx>=0.27",
+    "fpdf2>=2.8",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +28,14 @@ dev = [
     "pytest-asyncio>=0.24",
     "pgserver>=0.1.4",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Ship the Mini App assets inside the installed package so the API resolves them
+# relative to pca/api/ on any Python version, without copying files into site-packages.
+[tool.setuptools.package-data]
+"pca.api" = ["static/*.html", "static/*.css", "static/*.js"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
