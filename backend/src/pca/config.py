@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     subscription_cache_seconds: int = Field(default=120, ge=0, le=3600)
 
     support_contact: str = "@prochannelauditor"
-    public_base_url: str = "http://localhost:8000"
+    public_base_url: str = ""
+    heartbeat_path: str = "/tmp/pca-bot-heartbeat"
 
     @property
     def admin_telegram_ids(self) -> frozenset[int]:
@@ -54,11 +55,14 @@ class Settings(BaseSettings):
             problems = []
             if not self.bot_token.get_secret_value():
                 problems.append("PCA_BOT_TOKEN is required")
-            if self.required_channel_id is None and self.subscription_enforced:
-                problems.append("PCA_REQUIRED_CHANNEL_ID (numeric chat id) is required when subscription is enforced")
+            if self.subscription_enforced and self.required_channel_id is None and not self.required_channel_username:
+                problems.append(
+                    "PCA_REQUIRED_CHANNEL_ID or PCA_REQUIRED_CHANNEL_USERNAME is required when subscription is enforced"
+                )
             if not self.admin_telegram_ids:
                 problems.append("PCA_ADMIN_TELEGRAM_IDS must list at least one numeric admin id")
-            if not self.public_base_url.startswith("https://"):
+            # Optional until the account-connection web flow ships; when set it must be HTTPS.
+            if self.public_base_url and not self.public_base_url.startswith("https://"):
                 problems.append("PCA_PUBLIC_BASE_URL must use https:// in production")
             if problems:
                 raise ValueError("; ".join(problems))

@@ -106,6 +106,21 @@ def test_production_settings_validation():
     )
     assert ok.admin_telegram_ids == frozenset({1, 2})
 
+    by_username = Settings(
+        environment="production", bot_token="123:abc", PCA_ADMIN_TELEGRAM_IDS="1", _env_file=None
+    )
+    assert by_username.required_channel_id is None
+    assert by_username.required_channel_username == "prochannelauditor"
+
+    with pytest.raises(ValueError, match="https"):
+        Settings(
+            environment="production",
+            bot_token="123:abc",
+            PCA_ADMIN_TELEGRAM_IDS="1",
+            public_base_url="http://example.com",
+            _env_file=None,
+        )
+
 
 def test_admin_ids_must_be_numeric():
     with pytest.raises(ValueError):
