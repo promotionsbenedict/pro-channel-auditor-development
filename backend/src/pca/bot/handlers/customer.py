@@ -17,8 +17,7 @@ from pca.config import Settings
 from pca.db.models import CreditPackage, User
 from pca.security.crypto import Keyring
 from pca.services import channels as channel_service
-from pca.services import ledger
-from pca.services.audits import list_user_audits
+from pca.services import audit_engine, ledger
 from pca.services.connect import connect_url, issue_link
 from pca.services.users import get_active_connection
 from pca.telegram.errors import SessionInvalidError, TelegramGatewayError
@@ -44,12 +43,6 @@ async def show_wallet(event: Message | CallbackQuery, session: AsyncSession, db_
         ),
         keyboards.back_to_menu(),
     )
-
-
-@router.message(Command("my_audits"), flags=SENSITIVE)
-@router.callback_query(MenuCb.filter(F.action == "audits"), flags=SENSITIVE)
-async def show_audits(event: Message | CallbackQuery, session: AsyncSession, db_user: User) -> None:
-    await respond(event, texts.audits_text(await list_user_audits(session, db_user.id)), keyboards.back_to_menu())
 
 
 @router.callback_query(MenuCb.filter(F.action == "account"))
@@ -177,6 +170,7 @@ async def choose_audit_channel(
     callback_data: ChanCb,
     session: AsyncSession,
     db_user: User,
+    settings: Settings,
     keyring: Keyring | None,
     gateway: AccountGateway | None,
 ) -> None:
@@ -202,13 +196,16 @@ async def choose_audit_channel(
         await _report_gateway_error(query, session, exc)
         return
     await session.commit()
-    await respond(query, texts.audit_ready_text(channel, auth), keyboards.back_to_menu())
-
-
-@router.message(Command("compare"), flags=SENSITIVE)
-@router.callback_query(MenuCb.filter(F.action == "compare"), flags=SENSITIVE)
-async def start_compare(event: Message | CallbackQuery) -> None:
-    await respond(event, texts.COMPARE_EMPTY, keyboards.back_to_menu())
+    try:
+        quote = await audit_engine.quote_audit(session, settings, auth)
+    except audit_engine.AuditError as exc:
+        await respond(query, texts.audit_error(exc.code), keyboards.back_to_menu())
+        return
+    wallet = await ledger.get_wallet(session, db_user.id)
+    available = wallet.available_credits if wallet else 0
+    await respond(
+        query, texts.audit_quote_text(channel, quote, available), keyboards.audit_confirm(auth.id, available >= quote.credits)
+    )
 
 
 @router.message(Command("buy"), flags=SENSITIVE)

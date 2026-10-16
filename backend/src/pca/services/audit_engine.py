@@ -239,8 +239,12 @@ async def build_summary(session: AsyncSession, job: AuditJob) -> dict[str, Any]:
 
     engaged = last_seen["online"] + last_seen["offline_24h"] + last_seen["recently"]
     risk = attrs["is_deleted"] + attrs["is_bot"] + attrs["is_scam"] + attrs["is_fake"]
+    generated = _now()
+    request_age, timeline = await _request_timing(session, job.id, generated)
     return {
-        "version": 1,
+        "version": 2,
+        "request_age": request_age,
+        "timeline": timeline,
         "scanned": total,
         "expected": job.expected_requests or 0,
         "coverage": round(total / job.expected_requests, 4) if job.expected_requests else 0.0,
@@ -254,8 +258,52 @@ async def build_summary(session: AsyncSession, job: AuditJob) -> dict[str, Any]:
             "no_photo_share": share(total - attrs["has_photo"]),
             "no_username_share": share(total - attrs["has_username"]),
         },
-        "generated_at": _now().isoformat(),
+        "generated_at": generated.isoformat(),
     }
+
+
+AGE_BUCKETS: tuple[tuple[str, int], ...] = (("lt_1d", 1), ("d1_7", 7), ("d7_30", 30), ("d30_90", 90))
+TIMELINE_DAYS = 90
+
+
+async def _request_timing(
+    session: AsyncSession, job_id: int, now: datetime
+) -> tuple[dict[str, int], dict[str, Any]]:
+    """Request age buckets and a daily arrival histogram (UTC), measured from ``now``."""
+    r = AuditRequester
+    known = r.requested_at.is_not(None)
+    cols = [func.count().filter(r.requested_at.is_(None)).label("unknown")]
+    lower = now
+    for name, days in AGE_BUCKETS:
+        edge = now - timedelta(days=days)
+        cols.append(func.count().filter(known, r.requested_at >= edge, r.requested_at < lower).label(name))
+        lower = edge
+    cols.append(func.count().filter(known, r.requested_at < lower).label("gt_90"))
+    # Requests stamped slightly in the future (clock skew) belong to the newest bucket.
+    cols.append(func.count().filter(known, r.requested_at >= now).label("future"))
+    row = (await session.execute(select(*cols).where(r.audit_job_id == job_id))).one()._mapping
+    age = {name: int(row[name]) for name, _ in AGE_BUCKETS}
+    age["lt_1d"] += int(row["future"])
+    age["gt_90"] = int(row["gt_90"])
+    age["unknown"] = int(row["unknown"])
+
+    since = now - timedelta(days=TIMELINE_DAYS)
+    day = func.date(func.timezone("UTC", r.requested_at))
+    daily_rows = (
+        await session.execute(
+            select(day, func.count())
+            .where(r.audit_job_id == job_id, known, r.requested_at >= since)
+            .group_by(day)
+            .order_by(day)
+        )
+    ).all()
+    daily = {d.isoformat(): int(n) for d, n in daily_rows}
+    earlier = (
+        await session.execute(
+            select(func.count()).where(r.audit_job_id == job_id, known, r.requested_at < since)
+        )
+    ).scalar_one()
+    return age, {"daily": daily, "earlier": int(earlier), "unknown": age["unknown"], "days": TIMELINE_DAYS}
 
 
 async def finalize(

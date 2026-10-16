@@ -170,6 +170,24 @@ def audit_report(job_id: int, *, has_csv: bool) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def audit_closed() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔍 New Audit", callback_data=MenuCb(action="audit"))
+    builder.button(text="📊 My Audits", callback_data=MenuCb(action="audits"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def compare_result(a_id: int, b_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📄 Comparison PDF", callback_data=AudCb(action="cmp_pdf", id=b_id, ref=a_id))
+    builder.button(text=f"Report #{a_id}", callback_data=AudCb(action="open", id=a_id))
+    builder.button(text=f"Report #{b_id}", callback_data=AudCb(action="open", id=b_id))
+    builder.button(text="⚖️ New comparison", callback_data=MenuCb(action="compare"))
+    builder.adjust(1, 2, 1)
+    return builder.as_markup()
+
+
 def audit_list(items: list[tuple[int, str]], page: int, list_name: str = "audits", ref: int = 0) -> InlineKeyboardMarkup:
     """items: (audit job id, label). ``cmp_a``/``cmp_b`` lists pick comparison sides."""
     page, start, end = page_bounds(len(items), page)

@@ -238,6 +238,87 @@ def audit_ready_text(channel, auth) -> str:
     )
 
 
+AUDIT_ERRORS = {
+    "nothing_to_audit": "This channel has no pending join requests to audit right now.",
+    "too_many_active": "You already have the maximum number of audits running. Wait for one to finish.",
+    "already_running": "An audit of this channel is already running.",
+    "insufficient_credits": "You don't have enough credits for this audit. Buy credits, then try again.",
+    "account_disconnected": "Your Telegram account is no longer connected. Connect it again first.",
+    "channel_unavailable": "Your connected account can no longer audit this channel.",
+}
+
+
+def audit_error(code: str) -> str:
+    return "⚠️ " + AUDIT_ERRORS.get(code, "The audit couldn't be started. Please try again shortly.")
+
+
+def audit_quote_text(channel, quote, available: int) -> str:
+    cap = (
+        f"\n⚠️ Only the first {quote.scan_target:,} of {quote.pending_requests:,} requests will be scanned "
+        "(the per-audit limit)."
+        if quote.capped
+        else ""
+    )
+    afford = (
+        "Confirm to start. Credits are reserved now and only charged if the audit completes."
+        if available >= quote.credits
+        else f"You need {quote.credits - available} more credit(s)."
+    )
+    return (
+        f"<b>🔍 Audit {esc(channel.title)}</b>\n\n"
+        f"Pending join requests: {quote.pending_requests:,}\n"
+        f"Price: <b>{quote.credits} credit(s)</b> · Your balance: {available}{cap}\n\n"
+        "The audit is read-only: nobody is approved, rejected or contacted.\n"
+        f"{afford}"
+    )
+
+
+def audit_started_text(job, channel_title: str) -> str:
+    return (
+        f"<b>✅ Audit #{job.id} queued</b> for {esc(channel_title)}\n\n"
+        "We'll post progress here and message you when the report is ready. "
+        "You can cancel at any time before it finishes; cancelled audits are not charged."
+    )
+
+
+def audit_progress_text(view) -> str:
+    total = view.expected
+    line = (
+        f"{view.scanned:,} of about {total:,} requests scanned ({min(100, round(view.scanned * 100 / total))}%)"
+        if total
+        else f"{view.scanned:,} requests scanned"
+    )
+    return f"<b>⏳ Audit #{view.job_id} · {esc(view.channel_title)}</b>\n\nStatus: {esc(view.status_label)}\n{line}"
+
+
+AUDIT_NOT_FOUND = "That audit doesn't exist or isn't yours."
+AUDIT_CANCEL_CONFIRM = (
+    "<b>Cancel this audit?</b>\n\nScanning stops, collected data is deleted and your reserved credits are released."
+)
+REPORT_USAGE = "Usage: /report 123 (the audit number from My Audits)."
+REPORT_UNAVAILABLE = "A report is only available for completed or partial audits."
+CSV_UNAVAILABLE = "The CSV export is no longer available. Raw rows are deleted after the retention period."
+CSV_CAPTION = (
+    "Minimised export: one row per scanned request, without names, usernames, ids or exact times."
+)
+COMPARE_PICK_A = "<b>⚖️ Compare Channels</b>\n\nStep 1 of 2: choose the first completed audit (A)."
+COMPARE_BASE_NOT_COMPLETED = "Only completed audits can be compared."
+
+
+def compare_pick_b(title: str, job_id: int) -> str:
+    return f"<b>⚖️ Compare Channels</b>\n\nA: {esc(title)} (#{job_id})\nStep 2 of 2: choose the audit to compare it with (B)."
+
+
+def compare_error(code: str) -> str:
+    if code == "same_audit":
+        return "Choose two different audits to compare."
+    return "Both audits must be completed to compare them. Partial audits aren't comparable."
+
+
+def audit_history_text(count: int) -> str:
+    return f"<b>📊 My Audits</b>\n\n{count} audit(s). Tap one to open its status or report."
+
+
 CONNECT_NOT_ENABLED = (
     "<b>🔗 Connect Telegram Account</b>\n\n"
     "Secure account connection is being rolled out. It runs on our HTTPS authorization "

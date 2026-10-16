@@ -3,7 +3,7 @@ from __future__ import annotations
 from aiogram import Dispatcher
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from pca.bot.handlers import admin, customer, public
+from pca.bot.handlers import admin, customer, public, reports
 from pca.bot.middlewares import AccessGateMiddleware, DatabaseMiddleware, ErrorShieldMiddleware
 from pca.config import Settings
 from pca.security.crypto import Keyring
@@ -32,5 +32,5 @@ def build_dispatcher(
     dp.callback_query.middleware(AccessGateMiddleware())
 
     # Admin router first so admin commands resolve before any customer fallback.
-    dp.include_routers(admin.router, public.router, customer.router)
+    dp.include_routers(admin.router, public.router, customer.router, reports.router)
     return dp
