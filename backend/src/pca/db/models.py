@@ -282,6 +282,8 @@ class AuditJob(Base):
     locked_by: Mapped[str | None] = mapped_column(String(64))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

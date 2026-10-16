@@ -54,6 +54,8 @@ def upgrade() -> None:
     op.add_column("audit_jobs", sa.Column("locked_by", sa.String(64)))
     op.add_column("audit_jobs", sa.Column("lease_expires_at", sa.DateTime(timezone=True)))
     op.add_column("audit_jobs", sa.Column("last_progress_at", sa.DateTime(timezone=True)))
+    op.add_column("audit_jobs", sa.Column("checkpoint", postgresql.JSONB()))
+    op.add_column("audit_jobs", sa.Column("summary", postgresql.JSONB()))
 
     op.add_column("payments", sa.Column("mode", sa.String(8), server_default="test", nullable=False))
     op.add_column("payments", sa.Column("authorization_url", sa.String(512)))
@@ -147,6 +149,8 @@ def downgrade() -> None:
     for column in ("last_checked_at", "failure_reason", "provider_status", "authorization_url", "mode"):
         op.drop_column("payments", column)
     for column in (
+        "summary",
+        "checkpoint",
         "last_progress_at",
         "lease_expires_at",
         "locked_by",

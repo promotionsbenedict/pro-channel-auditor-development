@@ -57,6 +57,28 @@ class Settings(BaseSettings):
     connect_max_starts_per_ip_hour: int = Field(default=30, ge=1, le=1000)
     connect_init_data_max_age_seconds: int = Field(default=3600, ge=60, le=86400)
 
+    worker_concurrency: int = Field(default=3, ge=1, le=32)
+    worker_poll_seconds: float = Field(default=2.0, ge=0.1, le=60)
+    worker_lease_seconds: int = Field(default=120, ge=30, le=3600)
+    audit_page_size: int = Field(default=100, ge=10, le=200)
+    audit_page_delay_seconds: float = Field(default=1.0, ge=0, le=30)
+    audit_max_requests: int = Field(default=50_000, ge=100, le=1_000_000)
+    audit_max_duration_seconds: int = Field(default=3 * 3600, ge=60, le=48 * 3600)
+    audit_flood_inline_max_seconds: int = Field(default=60, ge=0, le=900)
+    audit_max_attempts: int = Field(default=6, ge=1, le=50)
+    audit_max_active_per_user: int = Field(default=2, ge=1, le=20)
+    audit_retention_days: int = Field(default=30, ge=1, le=3650)
+
+    paystack_secret_key: SecretStr = SecretStr("")
+    paystack_base_url: str = "https://api.paystack.co"
+    paystack_callback_url: str = ""
+    payment_pending_expiry_minutes: int = Field(default=120, ge=10, le=7 * 24 * 60)
+
+    @property
+    def paystack_mode(self) -> str:
+        key = self.paystack_secret_key.get_secret_value()
+        return "live" if key.startswith("sk_live_") else "test"
+
     @property
     def connect_enabled(self) -> bool:
         return bool(

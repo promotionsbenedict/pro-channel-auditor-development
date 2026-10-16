@@ -11,20 +11,25 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from telethon import TelegramClient, errors, functions, types, utils
 from telethon.password import check_prime_and_good
 from telethon.sessions import StringSession
 
 from pca.config import Settings
+from pca.domain.enums import LastSeenCategory
 from pca.telegram.errors import TelegramGatewayError, translate
 from pca.telegram.types import (
     AccountProfile,
     ChannelCheck,
     CodeDelivery,
     DiscoveredChannel,
+    JoinRequester,
+    JoinRequestPage,
     PasswordChallenge,
     PendingCode,
+    ScanCursor,
     SignInResult,
 )
 
@@ -257,3 +262,91 @@ class TelethonGateway:
             if entity is None or entity.left:
                 raise TelegramGatewayError("channel_unavailable")
             return ChannelCheck(channel=_discovered(entity), pending_requests=full.full_chat.requests_pending)
+
+    async def fetch_join_requests(
+        self, session: str, telegram_channel_id: int, access_hash: int, cursor: ScanCursor, limit: int
+    ) -> JoinRequestPage:
+        """Read one page of pending join requests. Strictly read-only: never approves or declines."""
+        bare_id, _ = utils.resolve_id(telegram_channel_id)
+        if cursor.offset_user_id:
+            offset_user: types.TypeInputUser = types.InputUser(cursor.offset_user_id, cursor.offset_user_hash)
+        else:
+            offset_user = types.InputUserEmpty()
+        offset_date = datetime.fromtimestamp(cursor.offset_date, UTC) if cursor.offset_date else None
+        async with self._connected(session) as client:
+            result = await client(
+                functions.messages.GetChatInviteImportersRequest(
+                    peer=types.InputPeerChannel(bare_id, access_hash),
+                    offset_date=offset_date,
+                    offset_user=offset_user,
+                    limit=limit,
+                    requested=True,
+                )
+            )
+        users = {u.id: u for u in result.users if isinstance(u, types.User)}
+        now = int(datetime.now(UTC).timestamp())
+        items: list[JoinRequester] = []
+        for imp in result.importers:
+            user = users.get(imp.user_id)
+            items.append(_requester(imp, user, now))
+        next_cursor: ScanCursor | None = None
+        if result.importers and len(result.importers) >= limit:
+            last = result.importers[-1]
+            last_user = users.get(last.user_id)
+            next_cursor = ScanCursor(
+                offset_date=int(last.date.timestamp()) if last.date else 0,
+                offset_user_id=last.user_id,
+                offset_user_hash=(last_user.access_hash or 0) if last_user else 0,
+            )
+        return JoinRequestPage(total=result.count, items=items, next_cursor=next_cursor)
+
+
+_DAY = 86_400
+
+
+def classify_last_seen(status: object, *, deleted: bool, now: int) -> tuple[str, int | None]:
+    """Map Telegram's privacy-filtered status to our categories.
+
+    ``recently`` is Telegram's privacy bucket (roughly 1 second to 2-3 days, exact time
+    hidden), so it is never merged into the confirmed-within-24h bucket.
+    """
+    if deleted:
+        return LastSeenCategory.OLDER.value, None
+    if isinstance(status, types.UserStatusOnline):
+        return LastSeenCategory.ONLINE.value, None
+    if isinstance(status, types.UserStatusOffline):
+        seen = int(status.was_online.timestamp())
+        age = now - seen
+        if age <= _DAY:
+            return LastSeenCategory.OFFLINE_24H.value, seen
+        if age <= 7 * _DAY:
+            return LastSeenCategory.LAST_WEEK.value, seen
+        if age <= 31 * _DAY:
+            return LastSeenCategory.LAST_MONTH.value, seen
+        return LastSeenCategory.OLDER.value, seen
+    if isinstance(status, types.UserStatusRecently):
+        return LastSeenCategory.RECENTLY.value, None
+    if isinstance(status, types.UserStatusLastWeek):
+        return LastSeenCategory.LAST_WEEK.value, None
+    if isinstance(status, types.UserStatusLastMonth):
+        return LastSeenCategory.LAST_MONTH.value, None
+    return LastSeenCategory.HIDDEN.value, None
+
+
+def _requester(imp: types.ChatInviteImporter, user: types.User | None, now: int) -> JoinRequester:
+    deleted = bool(user.deleted) if user else True
+    last_seen, was_online = classify_last_seen(user.status if user else None, deleted=deleted, now=now)
+    return JoinRequester(
+        user_id=imp.user_id,
+        requested_at=int(imp.date.timestamp()) if imp.date else None,
+        last_seen=last_seen,
+        was_online=was_online,
+        has_photo=bool(user and user.photo and not isinstance(user.photo, types.UserProfilePhotoEmpty)),
+        has_username=bool(user and (user.username or user.usernames)),
+        is_premium=bool(user and user.premium),
+        is_deleted=deleted,
+        is_bot=bool(user and user.bot),
+        is_scam=bool(user and user.scam),
+        is_fake=bool(user and user.fake),
+        via_chatlist=bool(imp.via_chatlist),
+    )

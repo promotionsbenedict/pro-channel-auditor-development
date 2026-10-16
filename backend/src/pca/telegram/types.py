@@ -77,6 +77,56 @@ class ChannelCheck:
     pending_requests: int | None
 
 
+@dataclass(frozen=True)
+class ScanCursor:
+    """Telegram's keyset cursor for join requests: the last row's date and user."""
+
+    offset_date: int = 0
+    offset_user_id: int = 0
+    offset_user_hash: int = 0
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "offset_date": self.offset_date,
+            "offset_user_id": self.offset_user_id,
+            "offset_user_hash": self.offset_user_hash,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> ScanCursor:
+        data = data or {}
+        return cls(
+            int(data.get("offset_date", 0)),
+            int(data.get("offset_user_id", 0)),
+            int(data.get("offset_user_hash", 0)),
+        )
+
+
+@dataclass(frozen=True)
+class JoinRequester:
+    """Only non-identifying attributes leave the gateway, plus the raw id for de-duplication."""
+
+    user_id: int
+    requested_at: int | None
+    last_seen: str
+    was_online: int | None
+    has_photo: bool
+    has_username: bool
+    is_premium: bool
+    is_deleted: bool
+    is_bot: bool
+    is_scam: bool
+    is_fake: bool
+    via_chatlist: bool
+
+
+@dataclass(frozen=True)
+class JoinRequestPage:
+    total: int
+    items: list[JoinRequester]
+    next_cursor: ScanCursor | None
+
+
 class LoginGateway(Protocol):
     async def send_code(self, phone: str) -> PendingCode: ...
 
@@ -99,5 +149,9 @@ class AccountGateway(Protocol):
     async def list_admin_channels(self, session: str) -> list[DiscoveredChannel]: ...
 
     async def check_channel(self, session: str, telegram_channel_id: int, access_hash: int) -> ChannelCheck: ...
+
+    async def fetch_join_requests(
+        self, session: str, telegram_channel_id: int, access_hash: int, cursor: ScanCursor, limit: int
+    ) -> JoinRequestPage: ...
 
     async def log_out(self, session: str) -> None: ...
