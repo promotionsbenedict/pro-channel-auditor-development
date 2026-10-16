@@ -11,13 +11,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pca.bot import keyboards, texts
-from pca.bot.keyboards import ChanCb, MenuCb
+from pca.bot.keyboards import BuyCb, ChanCb, MenuCb
 from pca.bot.ui import respond
 from pca.config import Settings
 from pca.db.models import CreditPackage, User
+from pca.domain.enums import PaymentStatus
 from pca.security.crypto import Keyring
 from pca.services import channels as channel_service
-from pca.services import audit_engine, ledger
+from pca.services import audit_engine, ledger, payments
 from pca.services.connect import connect_url, issue_link
 from pca.services.users import get_active_connection
 from pca.telegram.errors import SessionInvalidError, TelegramGatewayError
@@ -210,15 +211,69 @@ async def choose_audit_channel(
 
 @router.message(Command("buy"), flags=SENSITIVE)
 @router.callback_query(MenuCb.filter(F.action == "buy"), flags=SENSITIVE)
-async def start_buy(event: Message | CallbackQuery, session: AsyncSession) -> None:
-    packages = list(
-        (
-            await session.execute(
-                select(CreditPackage)
-                .where(CreditPackage.active.is_(True))
-                .order_by(CreditPackage.sort_order, CreditPackage.id)
-            )
-        ).scalars()
+async def start_buy(event: Message | CallbackQuery, session: AsyncSession, payment_provider=None) -> None:
+    packages = await payments.list_active_packages(session)
+    if not packages or payment_provider is None:
+        await respond(event, texts.BUY_UNAVAILABLE, keyboards.wallet_menu())
+        return
+    await respond(
+        event,
+        texts.buy_packages_text(packages),
+        keyboards.package_list([(p.id, texts.package_label(p)) for p in packages]),
     )
-    text = texts.buy_packages_text(packages) if packages else texts.BUY_UNAVAILABLE
-    await respond(event, text, keyboards.back_to_menu())
+
+
+@router.callback_query(BuyCb.filter(F.action == "pkg"), flags=SENSITIVE)
+async def on_buy_package(
+    query: CallbackQuery,
+    callback_data: BuyCb,
+    session: AsyncSession,
+    db_user: User,
+    settings: Settings,
+    payment_provider=None,
+) -> None:
+    if payment_provider is None:
+        await respond(query, texts.BUY_UNAVAILABLE, keyboards.back_to_menu())
+        return
+    try:
+        payment = await payments.create_checkout(
+            session, settings, payment_provider, user=db_user, package_id=callback_data.id
+        )
+    except payments.PaymentError as exc:
+        await respond(query, texts.payment_error(exc.code), keyboards.wallet_menu())
+        return
+    await respond(query, texts.checkout_text(payment), keyboards.pay_link(payment.authorization_url, payment.id))
+
+
+@router.callback_query(BuyCb.filter(F.action == "check"), flags=SENSITIVE)
+async def on_check_payment(
+    query: CallbackQuery, callback_data: BuyCb, session: AsyncSession, db_user: User, payment_provider=None
+) -> None:
+    if payment_provider is None:
+        await respond(query, texts.BUY_UNAVAILABLE, keyboards.back_to_menu())
+        return
+    try:
+        outcome = await payments.check_user_payment(
+            session, payment_provider, user=db_user, payment_id=callback_data.id
+        )
+    except payments.PaymentError as exc:
+        await respond(query, texts.payment_error(exc.code), keyboards.wallet_menu())
+        return
+    wallet = await ledger.get_wallet(session, db_user.id)
+    available = wallet.available_credits if wallet else 0
+    if outcome.status == PaymentStatus.INITIALIZED.value:
+        await respond(
+            query,
+            texts.payment_pending_text(outcome.payment),
+            keyboards.pay_link(outcome.payment.authorization_url or "", outcome.payment.id)
+            if outcome.payment.authorization_url
+            else keyboards.wallet_menu(),
+        )
+        return
+    await respond(query, texts.payment_status_text(outcome.payment, available), keyboards.wallet_menu())
+
+
+@router.callback_query(BuyCb.filter(F.action == "history"), flags=SENSITIVE)
+async def on_payment_history(query: CallbackQuery, session: AsyncSession, db_user: User) -> None:
+    history = await payments.payment_history(session, db_user.id)
+    await respond(query, texts.payment_history_text(history), keyboards.wallet_menu())

@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     paystack_secret_key: SecretStr = SecretStr("")
     paystack_base_url: str = "https://api.paystack.co"
     paystack_callback_url: str = ""
+    paystack_customer_email_domain: str = "customers.prochannelauditor.app"
     payment_pending_expiry_minutes: int = Field(default=120, ge=10, le=7 * 24 * 60)
 
     @property

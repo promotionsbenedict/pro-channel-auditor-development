@@ -101,6 +101,13 @@ async def main() -> None:
         gateway = TelethonGateway(settings)
     if not settings.connect_enabled:
         logger.warning("account connection disabled: set PCA_PUBLIC_BASE_URL, Telegram API and session keys")
+    payment_provider = None
+    if settings.paystack_secret_key.get_secret_value():
+        from pca.services.payments import PaystackClient
+
+        payment_provider = PaystackClient(settings)
+    else:
+        logger.warning("payments disabled: set PCA_PAYSTACK_SECRET_KEY")
     dp = build_dispatcher(
         settings=settings,
         sessionmaker=sessionmaker,
@@ -108,6 +115,7 @@ async def main() -> None:
         storage=RedisStorage(redis),
         keyring=keyring,
         gateway=gateway,
+        payment_provider=payment_provider,
     )
 
     heartbeat_task = asyncio.create_task(heartbeat(Path(settings.heartbeat_path)))
@@ -117,6 +125,8 @@ async def main() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         heartbeat_task.cancel()
+        if payment_provider is not None:
+            await payment_provider.aclose()
         await bot.session.close()
         await redis.aclose()
         await engine.dispose()

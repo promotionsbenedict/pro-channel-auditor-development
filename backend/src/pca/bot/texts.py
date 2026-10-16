@@ -348,11 +348,91 @@ BUY_UNAVAILABLE = (
 )
 
 
+def _money(currency: str, minor: int) -> str:
+    symbol = "₦" if currency.upper() == "NGN" else f"{currency} "
+    return f"{symbol}{minor / 100:,.2f}"
+
+
+def package_label(package) -> str:
+    return f"{package.name} · {package.credits} credits · {_money(package.currency, package.price_minor)}"
+
+
 def buy_packages_text(packages) -> str:
     lines = ["<b>💳 Buy Credits</b>\n", "Choose a package:"]
     for package in packages:
-        lines.append(f"• {esc(package.name)}: {package.credits} credits · {package.currency} {package.price_minor / 100:,.2f}")
-    lines.append("\nOnline checkout is being enabled. You'll be able to pay securely via Paystack.")
+        lines.append(f"• {esc(package_label(package))}")
+    lines.append("\nPayments are processed securely by Paystack. Credits never expire.")
+    return "\n".join(lines)
+
+
+def checkout_text(payment) -> str:
+    return (
+        "<b>💳 Checkout ready</b>\n\n"
+        f"Package: <b>{payment.credits} credits</b>\n"
+        f"Amount: <b>{_money(payment.currency, payment.amount)}</b>\n"
+        f"Reference: <code>{esc(payment.reference)}</code>\n\n"
+        "Tap the button below to pay on Paystack. Credits are added automatically once Paystack confirms "
+        "the payment. If they don't appear within a minute, tap “check status”."
+    )
+
+
+def payment_pending_text(payment) -> str:
+    return (
+        "<b>⏳ Waiting for confirmation</b>\n\n"
+        f"We haven't received confirmation from Paystack for <code>{esc(payment.reference)}</code> yet.\n"
+        "If you've just paid, wait a moment and check again. Unpaid checkouts expire automatically."
+    )
+
+
+def payment_status_text(payment, available: int) -> str:
+    if payment.status == "success":
+        return (
+            "<b>✅ Payment confirmed</b>\n\n"
+            f"<b>{payment.credits}</b> credits were added to your wallet.\n"
+            f"Available balance: <b>{available}</b> credits."
+        )
+    if payment.status == "abandoned":
+        return "<b>Checkout expired</b>\n\nThis checkout wasn't completed. You can start a new one from Buy Credits."
+    return (
+        "<b>❌ Payment not completed</b>\n\n"
+        "Paystack reported this payment as unsuccessful, so no credits were added. "
+        f"If you were charged, contact support (/support) with reference <code>{esc(payment.reference)}</code>."
+    )
+
+
+_PAYMENT_ERRORS = {
+    "package_unavailable": "That package is no longer available. Please choose another.",
+    "too_many_open_checkouts": "You have several unfinished checkouts. Complete one or wait for them to expire.",
+    "provider_unreachable": "We couldn't reach Paystack. Please try again in a moment.",
+    "provider_rejected": "Paystack couldn't start this checkout. Please try again later.",
+    "provider_bad_response": "Paystack returned an unexpected response. Please try again later.",
+    "not_found": "We couldn't find that payment.",
+    "not_configured": "Payments aren't available right now.",
+}
+
+
+def payment_error(code: str) -> str:
+    return "<b>💳 Buy Credits</b>\n\n" + esc(_PAYMENT_ERRORS.get(code, "Something went wrong. Please try again."))
+
+
+_PAYMENT_STATUS_LABEL = {
+    "initialized": "⏳ pending",
+    "success": "✅ paid",
+    "failed": "❌ failed",
+    "abandoned": "⌛ expired",
+}
+
+
+def payment_history_text(history) -> str:
+    if not history:
+        return "<b>🧾 Payment history</b>\n\nNo payments yet."
+    lines = ["<b>🧾 Payment history</b>\n"]
+    for payment in history:
+        label = _PAYMENT_STATUS_LABEL.get(payment.status, payment.status)
+        lines.append(
+            f"• {payment.created_at:%Y-%m-%d} · {payment.credits} credits · "
+            f"{_money(payment.currency, payment.amount)} · {label}"
+        )
     return "\n".join(lines)
 
 

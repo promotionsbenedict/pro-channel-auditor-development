@@ -5,6 +5,9 @@
 # The API listens on the host's localhost:18080. The Caddy container reaches the host via
 # host.docker.internal, which needs `extra_hosts: ["host.docker.internal:host-gateway"]`
 # on the Caddy service if it is not already set.
+#
+# This one domain serves the connect page, the Paystack webhook (/webhooks/paystack) and the
+# post-checkout page (/payments/callback). No extra routes are needed.
 
 connect.example.com {
 	encode gzip

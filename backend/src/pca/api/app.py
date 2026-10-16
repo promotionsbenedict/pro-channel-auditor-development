@@ -20,7 +20,11 @@ from redis.asyncio import Redis
 from sqlalchemy import text
 
 from pca.api import connect
+from pca.api import payments as payments_api
 from pca.config import Settings, get_settings
+from pca.db.models import Payment, User
+from pca.services import payments
+from pca.services.ledger import get_wallet
 from pca.db.session import create_engine, create_sessionmaker
 from pca.logging_setup import configure_logging
 from pca.services.connect import expire_stale_flows
@@ -50,9 +54,26 @@ async def _sweep_expired_flows(app: FastAPI) -> None:
                 await session.commit()
         except Exception:
             log.warning("expired-flow sweep failed", exc_info=True)
+        provider = app.state.payment_provider
+        if provider is None:
+            continue
+        try:
+            async with app.state.sessionmaker() as session:
+                outcomes = await payments.reconcile_pending(session, app.state.settings, provider)
+            for outcome in outcomes:
+                if outcome.credited:
+                    await app.state.notify_payment(outcome.payment)
+        except Exception:
+            log.warning("payment reconciliation sweep failed", exc_info=True)
 
 
-def create_app(settings: Settings | None = None, *, gateway: Any = None, bot: Bot | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    gateway: Any = None,
+    bot: Bot | None = None,
+    payment_provider: Any = None,
+) -> FastAPI:
     settings = settings or get_settings()
 
     @asynccontextmanager
@@ -87,6 +108,29 @@ def create_app(settings: Settings | None = None, *, gateway: Any = None, bot: Bo
             )
 
         app.state.notify_connected = notify_connected
+
+        app.state.payment_provider = payment_provider
+        owns_provider = False
+        if payment_provider is None and settings.paystack_secret_key.get_secret_value():
+            app.state.payment_provider = payments.PaystackClient(settings)
+            owns_provider = True
+
+        async def notify_payment(payment: Payment) -> None:
+            if notify_bot is None:
+                return
+            async with app.state.sessionmaker() as session:
+                user = await session.get(User, payment.user_id)
+                wallet = await get_wallet(session, payment.user_id)
+            if user is None:
+                return
+            balance = wallet.available_credits if wallet else payment.credits
+            await notify_bot.send_message(
+                user.telegram_user_id,
+                f"✅ <b>Payment confirmed</b>\n\n<b>{payment.credits}</b> credits were added to your wallet.\n"
+                f"Available balance: <b>{balance}</b> credits.\nReference: <code>{esc(payment.reference)}</code>",
+            )
+
+        app.state.notify_payment = notify_payment
         sweeper = asyncio.create_task(_sweep_expired_flows(app))
         try:
             yield
@@ -94,6 +138,8 @@ def create_app(settings: Settings | None = None, *, gateway: Any = None, bot: Bo
             sweeper.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await sweeper
+            if owns_provider:
+                await app.state.payment_provider.aclose()
             if owns_bot and notify_bot is not None:
                 await notify_bot.session.close()
             await app.state.redis.aclose()
@@ -146,5 +192,6 @@ def create_app(settings: Settings | None = None, *, gateway: Any = None, bot: Bo
         return JSONResponse({"status": "ok" if healthy else "degraded", **checks}, status_code=200 if healthy else 503)
 
     app.include_router(connect.router)
+    app.include_router(payments_api.router)
     app.mount("/connect/static", StaticFiles(directory=connect.STATIC_DIR), name="connect-static")
     return app

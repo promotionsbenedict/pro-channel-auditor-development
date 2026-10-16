@@ -19,12 +19,14 @@ def build_dispatcher(
     storage=None,
     keyring: Keyring | None = None,
     gateway: AccountGateway | None = None,
+    payment_provider=None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=storage) if storage is not None else Dispatcher()
     dp["settings"] = settings
     dp["subscription"] = subscription
     dp["keyring"] = keyring
     dp["gateway"] = gateway
+    dp["payment_provider"] = payment_provider
 
     dp.update.outer_middleware(ErrorShieldMiddleware())
     dp.update.outer_middleware(DatabaseMiddleware(sessionmaker, settings))
