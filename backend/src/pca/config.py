@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     support_contact: str = "@prochannelauditor"
     public_base_url: str = ""
     heartbeat_path: str = "/tmp/pca-bot-heartbeat"
+    worker_heartbeat_path: str = "/tmp/pca-worker-heartbeat"
 
     # MTProto application credentials from https://my.telegram.org (Telegram API ToS 2.1: own api_id).
     telegram_api_id: int | None = None

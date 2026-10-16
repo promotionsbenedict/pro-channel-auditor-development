@@ -69,6 +69,20 @@ services:
       retries: 3
       start_period: 30s
 
+  worker:
+    <<: *app
+    restart: unless-stopped
+    command: ["python", "-m", "pca.worker"]
+    stop_grace_period: 45s
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "python", "-m", "pca.worker.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   api:
     <<: *app
     restart: unless-stopped
