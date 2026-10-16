@@ -20,17 +20,26 @@ done
 echo "==> Backing up database (if running)"
 deploy/backup.sh
 
+image="pca-app:$(value PCA_STACK_NAME || true)"
+[[ "$image" == "pca-app:" ]] && image="pca-app:pca"
+if docker image inspect "$image" >/dev/null 2>&1; then
+  echo "==> Keeping current image as ${image}-previous for rollback"
+  docker tag "$image" "${image}-previous"
+fi
+
 echo "==> Building image"
 docker compose build
 
 echo "==> Starting Postgres and Redis"
 docker compose up -d --wait postgres redis
 
-echo "==> Applying migrations"
+echo "==> Applying migrations (additive only)"
 docker compose run --rm migrate
 
-echo "==> Starting bot and API"
-docker compose up -d --wait bot api
+echo "==> Starting bot, worker and API"
+docker compose up -d --wait bot worker api
 
 docker compose ps
-echo "Deployed. Follow bot logs with: docker compose logs -f bot"
+mkdir -p .deploy
+git rev-parse HEAD > .deploy/current 2>/dev/null || true
+echo "Deployed. Logs: docker compose logs -f bot worker api"
