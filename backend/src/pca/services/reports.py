@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pca.db.models import AuditJob, AuditRequester, Channel
 from pca.domain.enums import AuditJobStatus
 
+MIN_COVERAGE = 0.95
+
 STATUS_LABEL = {
     "completed": "Completed",
     "partial": "Partial",
@@ -39,6 +41,7 @@ REASON_TEXT = {
     "session_invalid": "the connected Telegram session was logged out or revoked",
     "account_disconnected": "the Telegram account was disconnected",
     "internal_error": "repeated errors while talking to Telegram",
+    "incomplete_scan": "Telegram stopped returning requests before the expected number had been read",
     "cancelled_by_user": "you cancelled it",
 }
 
@@ -93,7 +96,26 @@ class ReportView:
         return self.summary is not None and self.status in ("completed", "partial")
 
     @property
+    def target(self) -> int:
+        """The disclosed scope: pending requests at start, capped by the scan limit."""
+        if self.scan_limit and self.expected:
+            return min(self.scan_limit, self.expected)
+        return self.scan_limit or self.expected
+
+    @property
+    def under_covered(self) -> bool:
+        return bool(self.target) and self.scanned < self.target * MIN_COVERAGE
+
+    @property
+    def incomplete_but_marked_complete(self) -> bool:
+        """Audits finalised as completed before completion was verified (e.g. a short page
+        treated as the end of the list). Never presented as a complete audit."""
+        return self.status == AuditJobStatus.COMPLETED.value and self.under_covered
+
+    @property
     def status_label(self) -> str:
+        if self.incomplete_but_marked_complete:
+            return "Incomplete scan"
         return STATUS_LABEL.get(self.status, self.status)
 
     def count(self, *path: str) -> int:
@@ -144,12 +166,21 @@ async def load_report(session: AsyncSession, user_id: int, job_id: int) -> Repor
 
 def status_explanation(view: ReportView) -> str:
     reason = REASON_TEXT.get(view.error_code or "", "an unexpected problem")
+    counts = f"{view.scanned:,} of {view.target:,} expected requests were scanned"
+    if view.incomplete_but_marked_complete:
+        note = " Contact support to have the credits restored." if view.charged_credits else ""
+        return (
+            f"Incomplete: only {counts}. This is not a complete audit and the figures cover "
+            f"just the scanned requests.{note}"
+        )
     if view.status == AuditJobStatus.COMPLETED.value:
-        return "Completed: every pending request Telegram returned was scanned."
+        if view.scan_limit and view.expected and view.scan_limit < view.expected:
+            return f"Completed within the disclosed scan limit: {view.scanned:,} of {view.expected:,} pending requests."
+        return f"Completed: {view.scanned:,} of {view.expected:,} pending requests scanned."
     if view.status == AuditJobStatus.PARTIAL.value:
         return (
-            f"Partial: the scan stopped early because {reason}. Figures cover only the scanned "
-            "requests. No credits were charged."
+            f"Partial: the scan stopped early because {reason} ({counts}). Figures cover only the "
+            "scanned requests. No credits were charged."
         )
     if view.status == AuditJobStatus.FAILED.value:
         return f"Failed: the audit could not run because {reason}. No credits were charged and no report was produced."

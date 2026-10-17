@@ -66,7 +66,13 @@ class Settings(BaseSettings):
     audit_max_requests: int = Field(default=50_000, ge=100, le=1_000_000)
     audit_max_duration_seconds: int = Field(default=3 * 3600, ge=60, le=48 * 3600)
     audit_flood_inline_max_seconds: int = Field(default=60, ge=0, le=900)
-    audit_max_attempts: int = Field(default=6, ge=1, le=50)
+    audit_max_attempts: int = Field(default=12, ge=1, le=50)
+    # Consecutive fetches that add nothing new before the queue is considered exhausted.
+    audit_stall_confirmations: int = Field(default=3, ge=1, le=20)
+    audit_stall_backoff_seconds: int = Field(default=10, ge=0, le=300)
+    # Pending requests change during a scan, so exhaustion only counts as a complete
+    # audit when at least this share of the (live) target was actually read.
+    audit_min_completion_ratio: float = Field(default=0.95, gt=0, le=1)
     audit_max_active_per_user: int = Field(default=2, ge=1, le=20)
     audit_retention_days: int = Field(default=30, ge=1, le=3650)
 

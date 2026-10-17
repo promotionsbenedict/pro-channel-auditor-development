@@ -32,7 +32,7 @@ from pca.domain.enums import (
     UserStatus,
 )
 from pca.logging_setup import redact_any
-from pca.services import audit_engine, ledger
+from pca.services import audit_engine, ledger, reports
 from pca.services import payments as payment_service
 from pca.services.users import get_user_by_telegram_id
 
@@ -487,6 +487,41 @@ async def retry_job(session: AsyncSession, admin: User, *, job_id: int) -> Audit
     await session.flush()
     await log_action(session, admin, "audit.retry", target_id=job_id, metadata={"from": previous})
     return job
+
+
+async def restore_audit_charge(session: AsyncSession, admin: User, *, job_id: int, reason: str) -> ledger.LedgerResult:
+    """Refund an audit that was settled as completed but never reached its disclosed scope.
+
+    Only under-covered completed audits qualify, and the (REFUND, audit) reference makes the
+    refund idempotent, so repeating the command cannot credit the customer twice."""
+    require_admin(admin)
+    if not reason.strip():
+        raise AdminOperationError("a reason is required")
+    job = await _lock_job(session, job_id)
+    if job.status != AuditJobStatus.COMPLETED.value or not job.charged_credits:
+        raise AdminOperationError("only a completed, charged audit can be refunded")
+    expected = job.expected_requests or 0
+    target = min(job.scan_limit, expected) if job.scan_limit and expected else (job.scan_limit or expected)
+    if not target or job.scanned_count >= target * reports.MIN_COVERAGE:
+        raise AdminOperationError("this audit reached its expected coverage; no automatic refund applies")
+    result = await ledger.add_credits(
+        session,
+        user_id=job.user_id,
+        credits=job.charged_credits,
+        tx_type=TransactionType.REFUND,
+        reference=f"audit-refund:{job.id}",
+        actor_user_id=admin.id,
+        note=f"Incomplete scan {job.scanned_count}/{target}: {reason}"[:255],
+    )
+    if result.created:
+        await log_action(
+            session,
+            admin,
+            "audit.refund",
+            target_id=job_id,
+            metadata={"credits": job.charged_credits, "scanned": job.scanned_count, "target": target, "reason": reason[:200]},
+        )
+    return result
 
 
 # --------------------------------------------------------------------------- packages

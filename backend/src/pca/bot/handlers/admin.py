@@ -337,6 +337,26 @@ async def cmd_job_cancel(
         await message.answer(f"Cancellation requested for audit #{job_id}; the worker stops at its next page.")
 
 
+@router.message(Command("audit_refund"))
+async def cmd_audit_refund(message: Message, command: CommandObject, session: AsyncSession, db_user: User) -> None:
+    parts = (command.args or "").split(maxsplit=1)
+    job_id = _parse_int(parts[0]) if parts else None
+    if job_id is None or len(parts) < 2:
+        await message.answer("Usage: /audit_refund &lt;audit_id&gt; &lt;reason&gt;")
+        return
+    try:
+        result = await admin_service.restore_audit_charge(session, db_user, job_id=job_id, reason=parts[1])
+    except admin_service.AdminOperationError as exc:
+        await session.rollback()
+        await message.answer(f"Rejected: {esc(exc)}")
+        return
+    await session.commit()
+    if result.created:
+        await message.answer(f"Refunded {result.transaction.amount} credit(s) for incomplete audit #{job_id}.")
+    else:
+        await message.answer(f"Audit #{job_id} was already refunded; nothing changed.")
+
+
 @router.message(Command("job_retry"))
 async def cmd_job_retry(message: Message, command: CommandObject, session: AsyncSession, db_user: User) -> None:
     job_id = _parse_int(command.args or "")

@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import hmac
 import logging
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -458,23 +459,53 @@ async def run_step(
     except TelegramGatewayError as exc:
         return await _handle_gateway_error(session, settings, job, exc)
 
+    stalls = int((job.checkpoint or {}).get("stalls", 0))
     inserted = await _store_page(session, settings, job, page)
-    job.attempts = 0 if page.items else job.attempts
-    # Telegram's keyset pagination repeats the cursor row; a page with nothing new or a
-    # cursor that did not advance means the list is exhausted, otherwise we'd loop forever.
-    stalled = inserted == 0 or (page.next_cursor is not None and page.next_cursor.as_dict() == cursor.as_dict())
+    if page.items:
+        job.attempts = 0
     if page.total and job.expected_requests is not None and page.total > (job.expected_requests or 0):
         job.expected_requests = page.total
     now = _now()
     job.last_progress_at = now
     job.lease_expires_at = now + timedelta(seconds=settings.worker_lease_seconds)
-    reached_limit = job.scanned_count >= (job.scan_limit or settings.audit_max_requests)
-    if page.next_cursor is None or reached_limit or stalled:
+    scan_cap = job.scan_limit or settings.audit_max_requests
+
+    # The disclosed scan limit was reached: complete under that scope.
+    if job.scanned_count >= scan_cap:
         await finalize(session, settings, job, AuditJobStatus.COMPLETED)
         return StepResult(done=True)
-    job.checkpoint = page.next_cursor.as_dict()
-    await session.flush()
-    return StepResult(done=False, sleep=settings.audit_page_delay_seconds)
+
+    if inserted > 0 and page.next_cursor is not None:
+        job.checkpoint = page.next_cursor.as_dict()
+        await session.flush()
+        return StepResult(done=False, sleep=settings.audit_page_delay_seconds)
+
+    # Nothing new: an empty page, a short page, or only rows we already hold. That is not
+    # proof of completion (Telegram can return transient empty/short pages), so re-ask a
+    # few times with backoff before treating the queue as exhausted.
+    stalls += 1
+    resume_from = page.next_cursor if page.next_cursor is not None and page.next_cursor != cursor else cursor
+    if stalls < settings.audit_stall_confirmations:
+        job.checkpoint = {**resume_from.as_dict(), "stalls": stalls}
+        backoff = settings.audit_stall_backoff_seconds * 2 ** (stalls - 1)
+        job.lease_expires_at = now + timedelta(seconds=backoff + settings.worker_lease_seconds)
+        await session.flush()
+        log.info("audit scan stalled, retrying", extra={"audit_job_id": job.id, "stalls": stalls, "backoff": backoff})
+        return StepResult(done=False, sleep=backoff)
+
+    # Exhausted. Pending requests move during a scan, so judge against the live total
+    # reported on this page (falling back to the quoted one) with a disclosed tolerance.
+    live_total = page.total if page.total > 0 else (job.expected_requests or 0)
+    required = math.ceil(min(scan_cap, live_total) * settings.audit_min_completion_ratio)
+    if job.scanned_count >= required and job.scanned_count > 0:
+        await finalize(session, settings, job, AuditJobStatus.COMPLETED)
+    else:
+        log.warning(
+            "audit ended before reaching the expected count",
+            extra={"audit_job_id": job.id, "scanned": job.scanned_count, "expected": live_total},
+        )
+        await finalize(session, settings, job, _end_status(job), "incomplete_scan")
+    return StepResult(done=True)
 
 
 async def _handle_gateway_error(

@@ -289,8 +289,11 @@ class TelethonGateway:
         for imp in result.importers:
             user = users.get(imp.user_id)
             items.append(_requester(imp, user, now))
+        # Telegram may return fewer rows than requested while more remain, so a short page
+        # proves nothing. The cursor follows the last row of any non-empty page; only an
+        # empty page (next_cursor None) is a genuine end-of-list signal.
         next_cursor: ScanCursor | None = None
-        if result.importers and len(result.importers) >= limit:
+        if result.importers:
             last = result.importers[-1]
             last_user = users.get(last.user_id)
             next_cursor = ScanCursor(
