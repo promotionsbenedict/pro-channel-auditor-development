@@ -33,7 +33,7 @@ from pca.config import Settings
 from pca.db.models import AuditJob, AuditRequester, Channel, ChannelAuthorization, TelegramConnection
 from pca.domain.enums import AuditJobStatus, ConnectionStatus, LastSeenCategory
 from pca.security.crypto import Keyring
-from pca.services import ledger, pricing
+from pca.services import audience, ledger, pricing
 from pca.services.connection import run_with_session
 from pca.services.reports import required_scanned
 from pca.telegram.errors import SessionInvalidError, TelegramGatewayError
@@ -115,6 +115,7 @@ async def create_audit(
     auth: ChannelAuthorization,
     channel: Channel,
     chat_id: int | None,
+    target_country: str | None = None,
 ) -> AuditJob:
     active = (
         await session.execute(
@@ -137,6 +138,7 @@ async def create_audit(
         quoted_credits=q.credits,
         reserved_credits=q.credits,
         scan_limit=q.scan_target,
+        target_country=target_country if target_country in audience.COUNTRY_BY_CODE else None,
         progress_chat_id=chat_id,
     )
     try:
@@ -270,6 +272,7 @@ async def build_summary(session: AsyncSession, job: AuditJob) -> dict[str, Any]:
             "no_photo_share": share(total - attrs["has_photo"]),
             "no_username_share": share(total - attrs["has_username"]),
         },
+        "audience": await audience.build_audience(session, job),
         "generated_at": generated.isoformat(),
     }
 
@@ -428,6 +431,9 @@ async def _store_page(session: AsyncSession, settings: Settings, job: AuditJob, 
             "is_scam": it.is_scam,
             "is_fake": it.is_fake,
             "via_chatlist": it.via_chatlist,
+            "name_script": it.name_script,
+            "username_style": it.username_style,
+            "name_style": it.name_style,
         }
         for i, it in enumerate(items)
     ]

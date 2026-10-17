@@ -277,6 +277,7 @@ class AuditJob(Base):
         ForeignKey("channel_authorizations.id", ondelete="SET NULL")
     )
     scan_limit: Mapped[int | None] = mapped_column(Integer)
+    target_country: Mapped[str | None] = mapped_column(String(2))
     scanned_count: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
     flood_waits: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
     paused_seconds: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
@@ -327,6 +328,10 @@ class AuditRequester(Base):
     is_scam: Mapped[bool] = mapped_column(Boolean, nullable=False)
     is_fake: Mapped[bool] = mapped_column(Boolean, nullable=False)
     via_chatlist: Mapped[bool] = mapped_column(Boolean, server_default=text("false"), nullable=False)
+    # Coarse categories only; the name and username they were derived from are never stored.
+    name_script: Mapped[str] = mapped_column(String(16), server_default="unknown", nullable=False)
+    username_style: Mapped[str] = mapped_column(String(16), server_default="unknown", nullable=False)
+    name_style: Mapped[str] = mapped_column(String(16), server_default="unknown", nullable=False)
 
 
 class SecurityEvent(Base):

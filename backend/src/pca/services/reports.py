@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pca.db.models import AuditJob, AuditRequester, Channel
 from pca.domain.enums import AuditJobStatus
+from pca.services import audience
 
 MIN_COVERAGE = 0.99
 
@@ -110,6 +111,13 @@ class ReportView:
     flood_waits: int
     charged_credits: int | None
     summary: dict[str, Any] | None
+    target_country: str | None = None
+
+    @property
+    def audience(self) -> dict[str, Any] | None:
+        """Aggregate audience analysis, absent for audits run before the feature existed."""
+        found = (self.summary or {}).get("audience")
+        return found if isinstance(found, dict) and found.get("target") else None
 
     @property
     def reportable(self) -> bool:
@@ -180,6 +188,7 @@ async def load_report(session: AsyncSession, user_id: int, job_id: int) -> Repor
         flood_waits=job.flood_waits,
         charged_credits=job.charged_credits,
         summary=job.summary,
+        target_country=job.target_country,
     )
 
 
@@ -328,6 +337,9 @@ def render_text(view: ReportView) -> str:
         body += ["", "<b>Arrivals, last 4 weeks</b>"]
         body += [f"• Week of {start:%d %b}: {n:,}" for start, n in weeks]
     body += ["", "<b>Quality indicators</b>", *(f"• {_e(s)}" for s in quality_summary(view))]
+    audience_lines = audience.text_lines(view.audience)
+    if audience_lines:
+        body += ["", *audience_lines]
     warn = warnings(view)
     if warn:
         body += ["", "<b>⚠️ Warnings</b>", *(f"• {_e(w)}" for w in warn)]

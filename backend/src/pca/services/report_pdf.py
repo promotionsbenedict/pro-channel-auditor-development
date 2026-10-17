@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
+from pca.services import audience
 from pca.services.reports import (
     AGE_LABELS,
     LAST_SEEN_LABELS,
@@ -139,6 +140,63 @@ def _title_block(doc: _Doc, title: str, subtitle: str) -> None:
     doc.para(f"Generated {datetime.now(UTC):%Y-%m-%d %H:%M} UTC", 9, MUTED)
 
 
+def _audience_section(doc: _Doc, aud: dict) -> None:
+    tgt = aud["target"]
+    classified = tgt["classified"]
+    doc.heading("Audience intelligence (estimate)")
+    doc.para(audience.ESTIMATE_NOTICE, 9, WARN)
+    doc.ln(1)
+    doc.table(
+        ["", "Value"],
+        [
+            ["Target country", tgt["country_name"] or "not selected"],
+            ["Target-audience suitability", audience.SUITABILITY_LABELS[tgt["suitability"]]],
+            ["Confidence", tgt["confidence"].capitalize()],
+            ["Accounts analysed", _fmt_count(aud["analyzed"])],
+            ["Names with a recognisable writing system", _fmt_count(classified)],
+            ["Locations verified", "No"],
+        ],
+        [100, 78],
+    )
+    doc.para(tgt["verdict"], 9.5)
+
+    scripts = audience.script_rows(aud)
+    if scripts:
+        doc.heading("Name writing systems")
+        doc.bars(
+            [
+                (
+                    audience.SCRIPT_LABELS.get(s, s),
+                    n * 100 / classified if classified else 0,
+                    f"{audience.cell(n)} · {audience.share_text(n, classified)}".rstrip(" ·"),
+                )
+                for s, n in scripts
+            ]
+        )
+        doc.para("Shares are of names with a recognisable writing system, not of countries.", 9, MUTED)
+    if tgt["clues"]:
+        doc.heading("Possible regional clues")
+        doc.bullets([c["region"] for c in tgt["clues"]], MUTED)
+
+    ind = aud["indicators"]
+    doc.heading("Suspicious-account indicators")
+    doc.table(
+        ["Indicator", "Count", "Share"],
+        [
+            [label, audience.cell(ind[key]), audience.share_text(ind[key], aud["analyzed"]) or "-"]
+            for key, label in audience.INDICATOR_LABELS
+        ]
+        + [["Any indicator (incl. Telegram flags)", audience.cell(ind["suspicious"]), audience.share_text(ind["suspicious"], aud["analyzed"]) or "-"]],
+        [110, 34, 34],
+    )
+    doc.para(
+        f"Overall suspicion level: {aud['suspicion_level']} (confidence {aud['quality_confidence']}). "
+        "Counts under 5 are suppressed. Indicators are patterns, not proof that an account is fake.",
+        9,
+        MUTED,
+    )
+
+
 def render_report_pdf(view: ReportView) -> bytes:
     doc = _Doc(f"Audit #{view.job_id}")
     username = f" (@{view.channel_username})" if view.channel_username else ""
@@ -216,6 +274,9 @@ def render_report_pdf(view: ReportView) -> bytes:
 
     doc.heading("Quality indicators")
     doc.bullets(quality_summary(view))
+
+    if view.audience:
+        _audience_section(doc, view.audience)
 
     warn = warnings(view)
     if warn:

@@ -118,6 +118,10 @@ class JoinRequester:
     is_scam: bool
     is_fake: bool
     via_chatlist: bool
+    # Coarse categories derived from the profile text; the text itself never leaves the gateway.
+    name_script: str = "unknown"
+    username_style: str = "unknown"
+    name_style: str = "unknown"
 
 
 @dataclass(frozen=True)

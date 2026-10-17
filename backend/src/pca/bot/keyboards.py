@@ -4,6 +4,8 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardMarkup, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from pca.services import audience
+
 
 class MenuCb(CallbackData, prefix="m"):
     action: str
@@ -132,14 +134,25 @@ class AudCb(CallbackData, prefix="au"):
     ref: int = 0
 
 
-def audit_confirm(auth_id: int, affordable: bool) -> InlineKeyboardMarkup:
+def audit_confirm(auth_id: int, affordable: bool, country: int = 0) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    label = audience.country_label(country)
+    builder.button(text=f"🌍 Target country: {label}", callback_data=AudCb(action="pick", id=auth_id, ref=country))
     if affordable:
-        builder.button(text="✅ Confirm and start audit", callback_data=AudCb(action="confirm", id=auth_id))
+        builder.button(text="✅ Confirm and start audit", callback_data=AudCb(action="confirm", id=auth_id, ref=country))
     else:
         builder.button(text="💳 Buy Credits", callback_data=MenuCb(action="buy"))
     builder.button(text="✖️ Cancel", callback_data=MenuCb(action="home"))
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def audit_countries(auth_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for index, country in enumerate(audience.COUNTRIES, start=1):
+        builder.button(text=country.name, callback_data=AudCb(action="quote", id=auth_id, ref=index))
+    builder.button(text="No target country", callback_data=AudCb(action="quote", id=auth_id, ref=0))
+    builder.adjust(2)
     return builder.as_markup()
 
 
@@ -159,14 +172,16 @@ def audit_cancel_confirm(job_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def audit_report(job_id: int, *, has_csv: bool) -> InlineKeyboardMarkup:
+def audit_report(job_id: int, *, has_csv: bool, has_audience: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="📄 PDF report", callback_data=AudCb(action="pdf", id=job_id))
     if has_csv:
         builder.button(text="📑 CSV export", callback_data=AudCb(action="csv", id=job_id))
+    if has_audience:
+        builder.button(text="🌍 Audience CSV", callback_data=AudCb(action="aud_csv", id=job_id))
     builder.button(text="⚖️ Compare with…", callback_data=PageCb(list="cmp_b", page=0, ref=job_id))
     builder.button(text="📊 My Audits", callback_data=MenuCb(action="audits"))
-    builder.adjust(2, 1, 1)
+    builder.adjust(2, 1, 1, 1)
     return builder.as_markup()
 
 

@@ -19,6 +19,7 @@ from telethon.sessions import StringSession
 
 from pca.config import Settings
 from pca.domain.enums import LastSeenCategory
+from pca.telegram import signals
 from pca.telegram.errors import TelegramGatewayError, translate
 from pca.telegram.types import (
     AccountProfile,
@@ -352,4 +353,17 @@ def _requester(imp: types.ChatInviteImporter, user: types.User | None, now: int)
         is_scam=bool(user and user.scam),
         is_fake=bool(user and user.fake),
         via_chatlist=bool(imp.via_chatlist),
+        **_profile_signals(user, deleted),
     )
+
+
+def _profile_signals(user: types.User | None, deleted: bool) -> dict[str, str]:
+    """Reduce name and username to coarse categories. Deleted or unavailable users carry no signal."""
+    if user is None or deleted:
+        return {}
+    handle = user.username or next((u.username for u in (user.usernames or []) if u.active), None)
+    return {
+        "name_script": signals.name_script(user.first_name, user.last_name),
+        "username_style": signals.username_style(handle),
+        "name_style": signals.name_style(user.first_name, user.last_name),
+    }

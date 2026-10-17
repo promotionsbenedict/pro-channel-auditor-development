@@ -278,7 +278,19 @@ def audit_error(code: str) -> str:
     return "⚠️ " + AUDIT_ERRORS.get(code, "The audit couldn't be started. Please try again shortly.")
 
 
-def audit_quote_text(channel, quote, available: int) -> str:
+AUDIENCE_PICK = (
+    "<b>🌍 Target country</b>\n\nChoose the country this channel is meant to reach. The report will estimate how "
+    "well the audience's name writing systems fit it. This is an estimate only: Telegram does not reveal "
+    "where members live."
+)
+AUDIENCE_CSV_UNAVAILABLE = "No audience analysis is available for this audit."
+AUDIENCE_CSV_CAPTION = (
+    "Aggregate audience estimate: counts and shares only, no rows per person, no names, usernames or ids. "
+    "Counts under 5 are suppressed. Locations are not verified."
+)
+
+
+def audit_quote_text(channel, quote, available: int, country: str = "Not set") -> str:
     cap = (
         f"\n⚠️ Only the first {quote.scan_target:,} of {quote.pending_requests:,} requests will be scanned "
         "(the per-audit limit)."
@@ -293,7 +305,8 @@ def audit_quote_text(channel, quote, available: int) -> str:
     return (
         f"<b>🔍 Audit {esc(channel.title)}</b>\n\n"
         f"Pending join requests: {quote.pending_requests:,}\n"
-        f"Price: <b>{quote.credits} credit(s)</b> · Your balance: {available}{cap}\n\n"
+        f"Price: <b>{quote.credits} credit(s)</b> · Your balance: {available}{cap}\n"
+        f"Target country: <b>{esc(country)}</b> (optional, used for the audience estimate)\n\n"
         "The audit is read-only: nobody is approved, rejected or contacted.\n"
         f"{afford}"
     )

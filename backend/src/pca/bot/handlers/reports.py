@@ -16,7 +16,7 @@ from pca.bot.ui import respond
 from pca.config import Settings
 from pca.db.models import User
 from pca.domain.enums import TERMINAL_AUDIT_STATUSES as FINAL_AUDIT_STATUSES
-from pca.services import audit_engine, ledger, report_pdf, reports
+from pca.services import audience, audit_engine, ledger, report_pdf, reports
 from pca.services import channels as channel_service
 from pca.services.audits import list_user_audits
 from pca.services.users import get_active_connection
@@ -64,9 +64,14 @@ async def show_quote(
     available = wallet.available_credits if wallet else 0
     await respond(
         query,
-        texts.audit_quote_text(channel, quote, available),
-        keyboards.audit_confirm(auth.id, available >= quote.credits),
+        texts.audit_quote_text(channel, quote, available, audience.country_label(callback_data.ref)),
+        keyboards.audit_confirm(auth.id, available >= quote.credits, callback_data.ref),
     )
+
+
+@router.callback_query(AudCb.filter(F.action == "pick"), flags=SENSITIVE)
+async def pick_country(query: CallbackQuery, callback_data: AudCb) -> None:
+    await respond(query, texts.AUDIENCE_PICK, keyboards.audit_countries(callback_data.id))
 
 
 @router.callback_query(AudCb.filter(F.action == "confirm"), flags=SENSITIVE)
@@ -79,9 +84,17 @@ async def confirm_audit(
         await respond(query, texts.CHANNEL_GONE, keyboards.back_to_menu())
         return
     auth, channel = found
+    country = audience.country_by_index(callback_data.ref)
     try:
         job = await audit_engine.create_audit(
-            session, settings, user_id=db_user.id, conn=connection, auth=auth, channel=channel, chat_id=query.from_user.id
+            session,
+            settings,
+            user_id=db_user.id,
+            conn=connection,
+            auth=auth,
+            channel=channel,
+            chat_id=query.from_user.id,
+            target_country=country.code if country else None,
         )
     except audit_engine.AuditError as exc:
         await session.rollback()
@@ -89,7 +102,7 @@ async def confirm_audit(
         return
     except ledger.InsufficientCreditsError:
         await session.rollback()
-        await respond(query, texts.audit_error("insufficient_credits"), keyboards.audit_confirm(auth.id, False))
+        await respond(query, texts.audit_error("insufficient_credits"), keyboards.audit_confirm(auth.id, False, callback_data.ref))
         return
     await session.commit()
     await respond(query, texts.audit_started_text(job, channel.title), keyboards.audit_running(job.id))
@@ -109,7 +122,9 @@ async def _show_audit(event: Message | CallbackQuery, session: AsyncSession, use
     await respond(
         event,
         reports.render_text(view),
-        keyboards.audit_report(view.job_id, has_csv=view.reportable) if view.reportable else keyboards.audit_closed(),
+        keyboards.audit_report(view.job_id, has_csv=view.reportable, has_audience=view.audience is not None)
+        if view.reportable
+        else keyboards.audit_closed(),
     )
 
 
@@ -184,6 +199,20 @@ async def send_csv(query: CallbackQuery, callback_data: AudCb, session: AsyncSes
     name = f"audit_{view.job_id}_{_safe_name(view.channel_title)}.csv"
     await query.bot.send_document(
         query.from_user.id, BufferedInputFile(data, filename=name), caption=texts.CSV_CAPTION
+    )
+
+
+@router.callback_query(AudCb.filter(F.action == "aud_csv"), flags=SENSITIVE)
+async def send_audience_csv(query: CallbackQuery, callback_data: AudCb, session: AsyncSession, db_user: User) -> None:
+    view = await reports.load_report(session, db_user.id, callback_data.id)
+    data = audience.export_csv(view.audience, view.target_country) if view is not None and view.reportable else None
+    if data is None:
+        await _alert(query, texts.AUDIENCE_CSV_UNAVAILABLE)
+        return
+    await query.answer()
+    name = f"audit_{view.job_id}_{_safe_name(view.channel_title)}_audience.csv"
+    await query.bot.send_document(
+        query.from_user.id, BufferedInputFile(data, filename=name), caption=texts.AUDIENCE_CSV_CAPTION
     )
 
 
