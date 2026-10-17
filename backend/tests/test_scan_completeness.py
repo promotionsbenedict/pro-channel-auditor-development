@@ -225,3 +225,206 @@ async def test_refund_refused_for_fully_scanned_audit(sessionmaker, settings, ke
 
 def test_scan_cursor_import_is_used():
     assert ScanCursor(0, 0, 0).as_dict()
+
+
+# --------------------------------------------------------------------------- resilience
+
+from datetime import UTC, datetime, timedelta  # noqa: E402
+
+from sqlalchemy import func  # noqa: E402
+
+from pca.services import audit_engine as eng  # noqa: E402
+from pca.telegram.errors import TelegramGatewayError  # noqa: E402
+
+
+async def _release_count(sm, job_id: int) -> int:
+    async with sm() as s:
+        return (
+            await s.execute(
+                select(func.count()).where(
+                    CreditTransaction.audit_job_id == job_id,
+                    CreditTransaction.transaction_type == TransactionType.AUDIT_RELEASE.value,
+                )
+            )
+        ).scalar_one()
+
+
+async def _settle_count(sm, job_id: int) -> int:
+    async with sm() as s:
+        return (
+            await s.execute(
+                select(func.count()).where(
+                    CreditTransaction.audit_job_id == job_id,
+                    CreditTransaction.transaction_type == TransactionType.AUDIT_SETTLE.value,
+                )
+            )
+        ).scalar_one()
+
+
+async def _resume(sm, settings, keyring, gw, job_id, worker="w2"):
+    async with sm() as s, s.begin():
+        (await s.get(AuditJob, job_id)).not_before = datetime.now(UTC) - timedelta(seconds=1)
+    assert await _claim(sm, settings, worker) == job_id
+    await _run(sm, settings, keyring, gw, job_id, worker)
+
+
+async def test_inline_flood_wait_resumes_without_losing_progress(sessionmaker, settings, keyring):
+    gw = FakeScan(35, fail_at_call={3: TelegramGatewayError("flood", retry_after=2)})
+    _, _, job = await _run_job(sessionmaker, settings, keyring, gw, 9401, 35)
+    assert job.status == AuditJobStatus.COMPLETED.value
+    assert job.scanned_count == 35
+    assert job.flood_waits == 1
+    assert job.paused_seconds >= 2, "flood wait is excluded from the run-time budget"
+
+
+@pytest.mark.parametrize("code", ["network", "telegram_unavailable"])
+async def test_transient_errors_park_and_resume_from_checkpoint(sessionmaker, settings, keyring, code):
+    tg_id = 9402 if code == "network" else 9403
+    user_id, job_id = await _setup(sessionmaker, settings, keyring, tg_id, pending=35)
+    gw = FakeScan(35, fail_at_call={3: TelegramGatewayError(code)})
+    await _claim(sessionmaker, settings)
+    await _run(sessionmaker, settings, keyring, gw, job_id)
+    async with sessionmaker() as s:
+        job = await s.get(AuditJob, job_id)
+        assert job.status == AuditJobStatus.WAITING_FOR_TELEGRAM.value
+        assert job.scanned_count == 19 and job.checkpoint is not None
+        parked_checkpoint = dict(job.checkpoint)
+    assert await _release_count(sessionmaker, job_id) == 0, "credits stay reserved while waiting"
+    await _resume(sessionmaker, settings, keyring, gw, job_id)
+    async with sessionmaker() as s:
+        job = await s.get(AuditJob, job_id)
+        assert job.status == AuditJobStatus.COMPLETED.value
+        assert job.scanned_count == 35
+    assert parked_checkpoint["offset_user_id"] == 19
+    assert await _settle_count(sessionmaker, job_id) == 1
+
+
+async def test_worker_crash_resumes_from_persisted_checkpoint(sessionmaker, settings, keyring):
+    user_id, job_id = await _setup(sessionmaker, settings, keyring, 9404, pending=35)
+    gw = FakeScan(35, fail_at_call={3: RuntimeError("boom")})
+    await _claim(sessionmaker, settings, "dead")
+    await _run(sessionmaker, settings, keyring, gw, job_id, "dead")
+    async with sessionmaker() as s:
+        job = await s.get(AuditJob, job_id)
+        assert job.status == AuditJobStatus.WAITING_FOR_TELEGRAM.value
+        assert job.scanned_count == 19
+    await _resume(sessionmaker, settings, keyring, gw, job_id)
+    async with sessionmaker() as s:
+        job = await s.get(AuditJob, job_id)
+        assert job.status == AuditJobStatus.COMPLETED.value
+        assert job.scanned_count == 35, "no rows lost or duplicated across the restart"
+    assert await _settle_count(sessionmaker, job_id) == 1
+
+
+async def test_lease_expiry_restart_keeps_checkpoint_and_progress(sessionmaker, settings, keyring):
+    user_id, job_id = await _setup(sessionmaker, settings, keyring, 9405, pending=35)
+    await _claim(sessionmaker, settings, "dead")
+    async with sessionmaker() as s, s.begin():
+        await eng.run_step(s, settings, keyring, FakeScan(35), job_id, "dead")
+        await eng.run_step(s, settings, keyring, FakeScan(35), job_id, "dead")
+    async with sessionmaker() as s, s.begin():
+        (await s.get(AuditJob, job_id)).lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    assert await _claim(sessionmaker, settings, "w2") == job_id
+    async with sessionmaker() as s:
+        assert (await s.get(AuditJob, job_id)).scanned_count > 0
+    await _run(sessionmaker, settings, keyring, FakeScan(35), job_id, "w2")
+    async with sessionmaker() as s:
+        job = await s.get(AuditJob, job_id)
+        assert job.status == AuditJobStatus.COMPLETED.value and job.scanned_count == 35
+
+
+async def test_long_scan_with_long_flood_waits_is_not_cut_by_duration_limit(sessionmaker, settings, keyring):
+    user_id, job_id = await _setup(sessionmaker, settings, keyring, 9406, pending=25)
+    await _claim(sessionmaker, settings)
+    limit = settings.audit_max_duration_seconds
+    async with sessionmaker() as s, s.begin():
+        job = await s.get(AuditJob, job_id)
+        # Started well past the limit in wall time, but nearly all of it was Telegram-imposed waiting.
+        job.started_at = datetime.now(UTC) - timedelta(seconds=limit + 7200)
+        job.paused_seconds = limit + 7200 - 60
+    await _run(sessionmaker, settings, keyring, FakeScan(25), job_id)
+    async with sessionmaker() as s:
+        job = await s.get(AuditJob, job_id)
+        assert job.status == AuditJobStatus.COMPLETED.value
+        assert job.scanned_count == 25
+
+
+async def test_active_time_over_limit_stops_and_releases(sessionmaker, settings, keyring):
+    user_id, job_id = await _setup(sessionmaker, settings, keyring, 9407, pending=25)
+    await _claim(sessionmaker, settings)
+    async with sessionmaker() as s, s.begin():
+        job = await s.get(AuditJob, job_id)
+        job.started_at = datetime.now(UTC) - timedelta(seconds=settings.audit_max_duration_seconds + 600)
+    await _run(sessionmaker, settings, keyring, FakeScan(25), job_id)
+    async with sessionmaker() as s:
+        job = await s.get(AuditJob, job_id)
+        assert job.error_code == "time_limit"
+        assert job.status == AuditJobStatus.FAILED.value  # nothing scanned yet
+    w = await _wallet(sessionmaker, user_id)
+    assert (w.available_credits, w.reserved_credits) == (100, 0)
+
+
+async def test_wall_clock_ceiling_stops_even_when_all_time_was_paused(sessionmaker, settings, keyring):
+    user_id, job_id = await _setup(sessionmaker, settings, keyring, 9408, pending=25)
+    await _claim(sessionmaker, settings)
+    async with sessionmaker() as s, s.begin():
+        job = await s.get(AuditJob, job_id)
+        job.started_at = datetime.now(UTC) - timedelta(seconds=settings.audit_max_wall_seconds + 60)
+        job.paused_seconds = settings.audit_max_wall_seconds
+    await _run(sessionmaker, settings, keyring, FakeScan(25), job_id)
+    async with sessionmaker() as s:
+        assert (await s.get(AuditJob, job_id)).error_code == "time_limit"
+    assert await _release_count(sessionmaker, job_id) == 1
+
+
+async def test_stalled_pagination_backs_off_instead_of_spinning(sessionmaker, settings, keyring):
+    user_id, job_id = await _setup(sessionmaker, settings, keyring, 9409, pending=500)
+    await _claim(sessionmaker, settings)
+    sleeps: list[float] = []
+
+    async def record(seconds):
+        sleeps.append(seconds)
+
+    gw = StuckCursorScan(500)
+    await eng.run_job(sessionmaker, settings, keyring, gw, job_id, "w1", eng.NullNotifier(), sleep=record)
+    assert all(s >= 1 for s in sleeps), "every stalled retry waits at least a second"
+    stall_sleeps = sleeps[-(settings.audit_stall_confirmations - 1):]
+    assert stall_sleeps == sorted(stall_sleeps) and len(set(stall_sleeps)) == len(stall_sleeps), "backoff grows"
+    assert gw.calls <= 3 + settings.audit_stall_confirmations + 1, "bounded number of attempts"
+    async with sessionmaker() as s:
+        assert (await s.get(AuditJob, job_id)).error_code == "pagination_stalled"
+
+
+async def test_endless_flood_waits_are_bounded_and_wait_each_time(sessionmaker, settings, keyring):
+    settings = settings.model_copy(update={"audit_max_consecutive_floods": 3})
+    user_id, job_id = await _setup(sessionmaker, settings, keyring, 9410, pending=25)
+    await _claim(sessionmaker, settings)
+    sleeps: list[float] = []
+
+    async def record(seconds):
+        sleeps.append(seconds)
+
+    always_flood = {i: TelegramGatewayError("flood", retry_after=2) for i in range(1, 50)}
+    gw = FakeScan(25, fail_at_call=always_flood)
+    await eng.run_job(sessionmaker, settings, keyring, gw, job_id, "w1", eng.NullNotifier(), sleep=record)
+    assert gw.calls == 4
+    assert all(s >= 3 for s in sleeps), "each flood wait is honoured (retry_after + 1)"
+    async with sessionmaker() as s:
+        job = await s.get(AuditJob, job_id)
+        assert job.error_code == "flood_limit"
+    assert await _release_count(sessionmaker, job_id) == 1
+
+
+async def test_incomplete_audit_releases_reserved_credits_exactly_once(sessionmaker, settings, keyring):
+    user_id, _, job = await _run_job(sessionmaker, settings, keyring, TruncatedScan(300, 199), 9411, 300)
+    assert job.status == AuditJobStatus.PARTIAL.value
+    assert await _release_count(sessionmaker, job.id) == 1
+    assert await _settle_count(sessionmaker, job.id) == 0
+    async with sessionmaker() as s, s.begin():
+        again = await s.get(AuditJob, job.id)
+        await eng.finalize(s, settings, again, AuditJobStatus.FAILED, "internal_error")
+        await eng.finalize(s, settings, again, AuditJobStatus.COMPLETED)
+    assert await _release_count(sessionmaker, job.id) == 1, "re-finalising never releases twice"
+    assert await _settle_count(sessionmaker, job.id) == 0
+    w = await _wallet(sessionmaker, user_id)
+    assert (w.available_credits, w.reserved_credits) == (100, 0)
