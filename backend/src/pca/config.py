@@ -64,15 +64,22 @@ class Settings(BaseSettings):
     audit_page_size: int = Field(default=100, ge=10, le=200)
     audit_page_delay_seconds: float = Field(default=1.0, ge=0, le=30)
     audit_max_requests: int = Field(default=50_000, ge=100, le=1_000_000)
+    # Active scanning time. Telegram flood waits, backoff and worker downtime do not count.
     audit_max_duration_seconds: int = Field(default=3 * 3600, ge=60, le=48 * 3600)
+    # Absolute ceiling including all waiting, so credits are never reserved indefinitely.
+    audit_max_wall_seconds: int = Field(default=72 * 3600, ge=3600, le=14 * 24 * 3600)
     audit_flood_inline_max_seconds: int = Field(default=60, ge=0, le=900)
     audit_max_attempts: int = Field(default=12, ge=1, le=50)
     # Consecutive fetches that add nothing new before the queue is considered exhausted.
     audit_stall_confirmations: int = Field(default=3, ge=1, le=20)
-    audit_stall_backoff_seconds: int = Field(default=10, ge=0, le=300)
-    # Pending requests change during a scan, so exhaustion only counts as a complete
-    # audit when at least this share of the (live) target was actually read.
-    audit_min_completion_ratio: float = Field(default=0.95, gt=0, le=1)
+    # Minimum 1s so a stalled cursor can never be re-asked in a tight loop.
+    audit_stall_backoff_seconds: int = Field(default=10, ge=1, le=300)
+    # Pending requests change during a scan, so a confirmed end of the list only counts as a
+    # complete audit when at least this share of the live target was read. The floor stops
+    # a configuration mistake from quietly lowering the bar below 99%.
+    audit_min_completion_ratio: float = Field(default=0.99, ge=0.99, le=1)
+    # Consecutive rate-limit responses without a single page of progress before giving up.
+    audit_max_consecutive_floods: int = Field(default=200, ge=1, le=10_000)
     audit_max_active_per_user: int = Field(default=2, ge=1, le=20)
     audit_retention_days: int = Field(default=30, ge=1, le=3650)
 

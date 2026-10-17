@@ -35,6 +35,7 @@ from pca.domain.enums import AuditJobStatus, ConnectionStatus, LastSeenCategory
 from pca.security.crypto import Keyring
 from pca.services import ledger, pricing
 from pca.services.connection import run_with_session
+from pca.services.reports import required_scanned
 from pca.telegram.errors import SessionInvalidError, TelegramGatewayError
 from pca.telegram.types import AccountGateway, JoinRequestPage, ScanCursor
 
@@ -206,6 +207,11 @@ async def claim_next(session: AsyncSession, settings: Settings, worker_id: str) 
     job = (await session.execute(stmt)).scalar_one_or_none()
     if job is None:
         return None
+    # Time between the planned resume point (end of a park, or lease expiry after a crash) and
+    # this claim is downtime, not scan time, so it must not eat the run-time budget.
+    resumes_at = job.lease_expires_at if job.status == AuditJobStatus.RUNNING.value else job.not_before
+    if job.started_at is not None and resumes_at is not None and resumes_at < now:
+        job.paused_seconds += int((now - resumes_at).total_seconds())
     job.status = AuditJobStatus.RUNNING.value
     job.locked_by = worker_id
     job.lease_expires_at = now + timedelta(seconds=settings.worker_lease_seconds)
@@ -242,13 +248,18 @@ async def build_summary(session: AsyncSession, job: AuditJob) -> dict[str, Any]:
     risk = attrs["is_deleted"] + attrs["is_bot"] + attrs["is_scam"] + attrs["is_fake"]
     generated = _now()
     request_age, timeline = await _request_timing(session, job.id, generated)
+    expected = job.expected_requests or 0
+    live_total = (job.checkpoint or {}).get("live_total")
+    withdrawn = max(expected - int(live_total), 0) if live_total else 0
     return {
         "version": 2,
         "request_age": request_age,
         "timeline": timeline,
         "scanned": total,
-        "expected": job.expected_requests or 0,
-        "coverage": round(total / job.expected_requests, 4) if job.expected_requests else 0.0,
+        "expected": expected,
+        "live_total": int(live_total) if live_total else None,
+        "withdrawn": withdrawn,
+        "coverage": round(total / expected, 4) if expected else 0.0,
         "last_seen": last_seen,
         "attributes": attrs,
         "indicators": {
@@ -346,6 +357,29 @@ def _end_status(job: AuditJob) -> AuditJobStatus:
     return AuditJobStatus.PARTIAL if job.scanned_count > 0 else AuditJobStatus.FAILED
 
 
+def _active_seconds(job: AuditJob, now: datetime) -> float:
+    """Run time that counts toward the duration limit: wall time minus time spent paused on
+    Telegram flood waits, error backoff and worker downtime."""
+    if job.started_at is None:
+        return 0.0
+    return max((now - job.started_at).total_seconds() - job.paused_seconds, 0.0)
+
+
+def _checkpoint(
+    cursor: ScanCursor, *, live_total: int | None = None, stalls: int = 0, floods: int = 0
+) -> dict[str, int]:
+    """Persisted resume point. Counters are included only when non-zero, so a page of real
+    progress (which writes a plain checkpoint) resets them."""
+    data = cursor.as_dict()
+    if live_total:
+        data["live_total"] = int(live_total)
+    if stalls:
+        data["stalls"] = stalls
+    if floods:
+        data["floods"] = floods
+    return data
+
+
 # --------------------------------------------------------------------------- scanning
 
 
@@ -427,7 +461,13 @@ async def run_step(
     if job.cancel_requested:
         await finalize(session, settings, job, AuditJobStatus.CANCELLED, "cancelled_by_user")
         return StepResult(done=True)
-    if job.started_at and _now() - job.started_at > timedelta(seconds=settings.audit_max_duration_seconds):
+    started = _now()
+    # The run-time limit counts active scanning only; Telegram-imposed waits are excluded.
+    # A separate, much longer wall-clock ceiling stops a job holding credits indefinitely.
+    if job.started_at and (
+        _active_seconds(job, started) > settings.audit_max_duration_seconds
+        or (started - job.started_at).total_seconds() > settings.audit_max_wall_seconds
+    ):
         await finalize(session, settings, job, _end_status(job), "time_limit")
         return StepResult(done=True)
 
@@ -443,8 +483,13 @@ async def run_step(
 
     cursor = ScanCursor.from_dict(job.checkpoint)
     remaining = max((job.scan_limit or settings.audit_max_requests) - job.scanned_count, 0)
-    # +1 because each page after the first repeats the cursor row.
-    limit = min(settings.audit_page_size, remaining + 1)
+    # +1 because each page after the first repeats the cursor row. Re-asks after a stall use the
+    # full page size: a shrunken limit would return a full page of already-seen rows and be
+    # misread as a stuck cursor instead of confirming the end of the list.
+    if int((job.checkpoint or {}).get("stalls", 0)) > 0:
+        limit = settings.audit_page_size
+    else:
+        limit = min(settings.audit_page_size, remaining + 1)
     access_hash = auth.access_hash or 0
     try:
         page = await run_with_session(
@@ -459,7 +504,10 @@ async def run_step(
     except TelegramGatewayError as exc:
         return await _handle_gateway_error(session, settings, job, exc)
 
-    stalls = int((job.checkpoint or {}).get("stalls", 0))
+    previous = job.checkpoint or {}
+    stalls = int(previous.get("stalls", 0))
+    # Latest positive count Telegram reported; withdrawn requests shrink it during a scan.
+    live_total = page.total if page.total > 0 else int(previous.get("live_total") or 0)
     inserted = await _store_page(session, settings, job, page)
     if page.items:
         job.attempts = 0
@@ -476,33 +524,40 @@ async def run_step(
         return StepResult(done=True)
 
     if inserted > 0 and page.next_cursor is not None:
-        job.checkpoint = page.next_cursor.as_dict()
+        job.checkpoint = _checkpoint(page.next_cursor, live_total=live_total)
         await session.flush()
         return StepResult(done=False, sleep=settings.audit_page_delay_seconds)
 
     # Nothing new: an empty page, a short page, or only rows we already hold. That is not
     # proof of completion (Telegram can return transient empty/short pages), so re-ask a
-    # few times with backoff before treating the queue as exhausted.
+    # few times with backoff (always at least one second) before treating the queue as done.
     stalls += 1
     resume_from = page.next_cursor if page.next_cursor is not None and page.next_cursor != cursor else cursor
     if stalls < settings.audit_stall_confirmations:
-        job.checkpoint = {**resume_from.as_dict(), "stalls": stalls}
-        backoff = settings.audit_stall_backoff_seconds * 2 ** (stalls - 1)
+        job.checkpoint = _checkpoint(resume_from, live_total=live_total, stalls=stalls)
+        backoff = max(settings.audit_stall_backoff_seconds, 1) * 2 ** (stalls - 1)
         job.lease_expires_at = now + timedelta(seconds=backoff + settings.worker_lease_seconds)
         await session.flush()
         log.info("audit scan stalled, retrying", extra={"audit_job_id": job.id, "stalls": stalls, "backoff": backoff})
         return StepResult(done=False, sleep=backoff)
 
-    # Exhausted. Pending requests move during a scan, so judge against the live total
-    # reported on this page (falling back to the quoted one) with a disclosed tolerance.
-    live_total = page.total if page.total > 0 else (job.expected_requests or 0)
-    required = math.ceil(min(scan_cap, live_total) * settings.audit_min_completion_ratio)
+    # A full page that adds nothing means the cursor is stuck, not that the list ended. The
+    # end of the list is only confirmed by an empty or short page, whatever the percentage.
+    if len(page.items) >= limit:
+        log.warning("audit pagination stalled", extra={"audit_job_id": job.id, "scanned": job.scanned_count})
+        await finalize(session, settings, job, _end_status(job), "pagination_stalled")
+        return StepResult(done=True)
+
+    # End confirmed. Requests withdrawn mid-scan shrink Telegram's live total, so the target
+    # is the live total (falling back to the quoted one), held to the 99% floor.
+    live = live_total or (job.expected_requests or 0)
+    required = required_scanned(min(scan_cap, live), settings.audit_min_completion_ratio)
     if job.scanned_count >= required and job.scanned_count > 0:
         await finalize(session, settings, job, AuditJobStatus.COMPLETED)
     else:
         log.warning(
             "audit ended before reaching the expected count",
-            extra={"audit_job_id": job.id, "scanned": job.scanned_count, "expected": live_total},
+            extra={"audit_job_id": job.id, "scanned": job.scanned_count, "expected": live},
         )
         await finalize(session, settings, job, _end_status(job), "incomplete_scan")
     return StepResult(done=True)
@@ -515,9 +570,25 @@ async def _handle_gateway_error(
         await finalize(session, settings, job, _end_status(job), exc.code)
         return StepResult(done=True)
     if exc.code == "flood":
-        wait = int(exc.retry_after or 30)
+        wait = max(int(exc.retry_after or 30), 1)
         job.flood_waits += 1
+        # Rate limits are Telegram's doing, not a failed attempt, and the checkpoint is left
+        # untouched so the same page is retried after the wait.
+        job.attempts = max(job.attempts - 1, 0)
+        previous = job.checkpoint or {}
+        floods = int(previous.get("floods", 0)) + 1
+        if floods > settings.audit_max_consecutive_floods:
+            await finalize(session, settings, job, _end_status(job), "flood_limit")
+            return StepResult(done=True)
+        resume = ScanCursor.from_dict(previous)
+        job.checkpoint = _checkpoint(
+            resume,
+            live_total=int(previous.get("live_total") or 0),
+            stalls=int(previous.get("stalls", 0)),
+            floods=floods,
+        )
         if wait <= settings.audit_flood_inline_max_seconds:
+            job.paused_seconds += wait + 1
             job.lease_expires_at = _now() + timedelta(seconds=wait + settings.worker_lease_seconds)
             await session.flush()
             return StepResult(done=False, sleep=wait + 1)
@@ -537,6 +608,7 @@ async def _handle_gateway_error(
 
 
 def _park(job: AuditJob, seconds: int) -> None:
+    job.paused_seconds += seconds
     job.status = AuditJobStatus.WAITING_FOR_TELEGRAM.value
     job.not_before = _now() + timedelta(seconds=seconds)
     job.locked_by = None

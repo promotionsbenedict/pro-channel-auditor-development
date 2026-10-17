@@ -279,6 +279,7 @@ class AuditJob(Base):
     scan_limit: Mapped[int | None] = mapped_column(Integer)
     scanned_count: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
     flood_waits: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    paused_seconds: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
     locked_by: Mapped[str | None] = mapped_column(String(64))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

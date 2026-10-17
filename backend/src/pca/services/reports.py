@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from html import escape
@@ -21,7 +22,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pca.db.models import AuditJob, AuditRequester, Channel
 from pca.domain.enums import AuditJobStatus
 
-MIN_COVERAGE = 0.95
+MIN_COVERAGE = 0.99
+
+
+def coverage_target(expected: int, scan_limit: int | None, live_total: int | None = None) -> int:
+    """The disclosed scope an audit is judged against.
+
+    Pending requests at start, capped by the scan limit, and lowered to Telegram's live total
+    when that is known and smaller: requests withdrawn or handled mid-scan are not a shortfall.
+    """
+    scope = min(scan_limit, expected) if scan_limit and expected else (scan_limit or expected)
+    if live_total is not None and scope:
+        return min(scope, live_total)
+    return scope
+
+
+def required_scanned(target: int, ratio: float = MIN_COVERAGE) -> int:
+    """Rows that must be read for ``target``. Rounded first so 0.99 * 700 cannot become 694."""
+    return math.ceil(round(target * ratio, 6))
 
 STATUS_LABEL = {
     "completed": "Completed",
@@ -42,6 +60,8 @@ REASON_TEXT = {
     "account_disconnected": "the Telegram account was disconnected",
     "internal_error": "repeated errors while talking to Telegram",
     "incomplete_scan": "Telegram stopped returning requests before the expected number had been read",
+    "pagination_stalled": "Telegram kept returning the same requests, so the end of the list could not be confirmed",
+    "flood_limit": "Telegram kept rate-limiting the connected account",
     "cancelled_by_user": "you cancelled it",
 }
 
@@ -97,14 +117,13 @@ class ReportView:
 
     @property
     def target(self) -> int:
-        """The disclosed scope: pending requests at start, capped by the scan limit."""
-        if self.scan_limit and self.expected:
-            return min(self.scan_limit, self.expected)
-        return self.scan_limit or self.expected
+        """The disclosed scope: pending requests at start, capped by the scan limit and by
+        Telegram's live total when the scan recorded one."""
+        return coverage_target(self.expected, self.scan_limit, (self.summary or {}).get("live_total"))
 
     @property
     def under_covered(self) -> bool:
-        return bool(self.target) and self.scanned < self.target * MIN_COVERAGE
+        return bool(self.target) and self.scanned < required_scanned(self.target)
 
     @property
     def incomplete_but_marked_complete(self) -> bool:
@@ -194,10 +213,16 @@ def warnings(view: ReportView) -> list[str]:
     scanned = view.denominator
     if view.scan_limit and view.expected and view.scan_limit < view.expected:
         out.append(f"The scan was capped at {view.scan_limit:,} of {view.expected:,} pending requests.")
-    if view.expected and scanned < view.expected * 0.95:
+    if view.target and scanned < required_scanned(view.target):
         out.append(
-            f"Coverage is {scanned * 100 / view.expected:.1f}%: some requests were not scanned "
+            f"Coverage is {scanned * 100 / view.target:.1f}%: some requests were not scanned "
             "(they may have been approved, withdrawn or expired during the scan)."
+        )
+    withdrawn = view.count("withdrawn")
+    if withdrawn:
+        out.append(
+            f"{withdrawn:,} request(s) were approved, declined or withdrawn while the scan ran "
+            "and are not counted as missing."
         )
     if view.expected and scanned > view.expected:
         out.append("More requests arrived during the scan than were pending when it started.")

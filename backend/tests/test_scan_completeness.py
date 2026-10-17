@@ -22,7 +22,7 @@ def settings() -> Settings:
         audit_page_delay_seconds=0,
         audit_flood_inline_max_seconds=5,
         audit_stall_confirmations=3,
-        audit_stall_backoff_seconds=0,
+        audit_stall_backoff_seconds=1,
         _env_file=None,
     )
 
@@ -61,9 +61,12 @@ class TruncatedScan(FakeScan):
             page = await super().fetch_join_requests(session, channel_id, access_hash, cursor, limit)
         finally:
             self.total = saved
-        nxt = page.next_cursor
-        if not page.items:
-            nxt = None
+        # Like the real gateway: the cursor follows the last row of any non-empty page, and only
+        # an empty page signals the end of the list.
+        nxt = None
+        if page.items:
+            last = page.items[-1].user_id
+            nxt = ScanCursor(1_700_000_000 - last, last, 1)
         return JoinRequestPage(total=saved, items=page.items, next_cursor=nxt)
 
 
@@ -99,10 +102,55 @@ async def test_premature_end_is_partial_and_uncharged(sessionmaker, settings, ke
     assert (w.available_credits, w.reserved_credits) == (100, 0)
 
 
-async def test_small_shortfall_within_tolerance_completes(sessionmaker, settings, keyring):
-    # 97 of 100 read (97%): requests withdrawn mid-scan must not turn into a failed audit.
+async def test_ninety_seven_percent_is_no_longer_complete(sessionmaker, settings, keyring):
     _, _, job = await _run_job(sessionmaker, settings, keyring, TruncatedScan(100, 97), 9304, 100)
+    assert job.status == AuditJobStatus.PARTIAL.value
+    assert job.error_code == "incomplete_scan"
+
+
+async def test_ninety_nine_percent_with_confirmed_end_completes(sessionmaker, settings, keyring):
+    # 693 of 700 read (99%) once the list end is confirmed by empty pages.
+    _, _, job = await _run_job(sessionmaker, settings, keyring, TruncatedScan(700, 693), 9307, 700)
     assert job.status == AuditJobStatus.COMPLETED.value
+
+
+class WithdrawingScan(FakeScan):
+    """Requests are withdrawn during the scan: the live total reported shrinks."""
+
+    def __init__(self, total: int, live_total: int) -> None:
+        super().__init__(live_total)
+        self.quoted = total
+
+    async def fetch_join_requests(self, session, channel_id, access_hash, cursor, limit):
+        page = await super().fetch_join_requests(session, channel_id, access_hash, cursor, limit)
+        return JoinRequestPage(total=self.total, items=page.items, next_cursor=page.next_cursor)
+
+
+async def test_withdrawn_requests_judged_against_live_total(sessionmaker, settings, keyring):
+    # 100 quoted at start, 40 withdrawn mid-scan: all 60 remaining were read.
+    _, _, job = await _run_job(sessionmaker, settings, keyring, WithdrawingScan(100, 60), 9308, 100)
+    assert job.status == AuditJobStatus.COMPLETED.value
+    assert job.scanned_count == 60
+
+
+class StuckCursorScan(FakeScan):
+    """Always returns the same full page of already-seen rows: a stuck cursor, not an end."""
+
+    async def fetch_join_requests(self, session, channel_id, access_hash, cursor, limit):
+        self.calls += 1
+        page = await FakeScan(self.total).fetch_join_requests(session, channel_id, access_hash, ScanCursor(0, 0, 0), limit)
+        return page
+
+
+async def test_stuck_full_page_cursor_ends_without_infinite_loop(sessionmaker, settings, keyring):
+    gw = StuckCursorScan(500)
+    user_id, _, job = await _run_job(sessionmaker, settings, keyring, gw, 9309, 500)
+    assert job.status == AuditJobStatus.PARTIAL.value
+    assert job.error_code == "pagination_stalled"
+    assert gw.calls <= 3 + settings.audit_stall_confirmations + 1
+    assert not job.charged_credits
+    w = await _wallet(sessionmaker, user_id)
+    assert (w.available_credits, w.reserved_credits) == (100, 0)
 
 
 def _view(**overrides) -> reports.ReportView:
